@@ -1,29 +1,32 @@
-import { Inter, Geist } from "next/font/google";
-import "./globals.css";
+import { ReactNode } from "react";
+import type { Metadata } from "next";
 import { ClerkProvider } from "@clerk/nextjs";
-import { cn } from "@/lib/utils";
+import { Inter } from "next/font/google";
 
-const geist = Geist({subsets:['latin'],variable:'--font-sans'});
+import "@stream-io/video-react-sdk/dist/css/styles.css";
+import "./globals.css";
+import { Toaster } from "@/components/ui/toaster";
 
 const inter = Inter({ subsets: ["latin"] });
 
-export const metadata = {
-  title: "Next.js App Router Example",
-  description: "An example of a Next.js app using the App Router.",
+export const metadata: Metadata = {
+  title: "YOOM",
+  description: "Video calling App",
+  icons: {
+    icon: "/icons/logo.svg",
+  },
 };
 
 export default function RootLayout({
   children,
-}: {
-  children: React.ReactNode;
-}) {
+}: Readonly<{ children: ReactNode }>) {
   return (
-    <html lang="en" className={cn("font-sans", geist.variable)}>
+    <html lang="en">
       <ClerkProvider
         appearance={{
           layout: {
-            logoImageUrl: "/icons/yoom-logo.svg",
             socialButtonsVariant: "iconButton",
+            logoImageUrl: "/icons/yoom-logo.svg",
           },
           variables: {
             colorText: "#fff",
@@ -31,10 +34,11 @@ export default function RootLayout({
             colorBackground: "#1C1F2E",
             colorInputBackground: "#252A41",
             colorInputText: "#fff",
-          }
+          },
         }}
       >
         <body className={`${inter.className} bg-dark-2`}>
+          <Toaster />
           {children}
         </body>
       </ClerkProvider>

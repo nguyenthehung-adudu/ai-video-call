@@ -225,7 +225,7 @@ button .cl-providerIcon__github {
 }
 
 .str-video__call-controls__button {
-  height: 40px;
+
 }
 
 /* ========================== GLASSMORPHISM ========================== */
@@ -247,6 +247,7 @@ button .cl-providerIcon__github {
 .cl-userButtonPopoverActionButton {
   color: white;
 }
+
 
 .cl-logoBox {
   height: 40px;
