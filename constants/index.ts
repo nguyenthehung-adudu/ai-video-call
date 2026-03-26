@@ -1,32 +1,39 @@
 export const sidebarLinks = [
     {
-        label: "Home",
+        label: "Trang chủ",
         imgUrl: "/icons/home.svg",
         route: "/",
        
     },
      {
-        label: "upcoming",
+        label: "Cuộc họp sắp tới",
         imgUrl: "/icons/upcoming.svg",
         route: "/upcoming",
        
     },
      {
-        label: "previous",
+        label: "Cuộcc họp đã kết thúc",
         imgUrl: "/icons/previous.svg",
         route: "/previous",
        
     },
      {
-        label: "recordings",
+        label: "Bản ghi cuộc họp",
         imgUrl: "/icons/recordings.svg",
         route: "/recordings",
        
     },
      {
-        label: "Personal Room",
+        label: "Phòng cá nhân",
         imgUrl: "/icons/add-personal.svg",
         route: "/personal-room",
        
     }
 ]
+export const avatarImages = [
+    "/images/avatar-1.jpeg",
+    "/images/avatar-2.jpeg",
+    "/images/avatar-3.png",
+    "/images/avatar-4.png",
+    "/images/avatar-5.png",
+  ];
