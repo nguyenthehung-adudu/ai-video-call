@@ -12,7 +12,7 @@ export const sidebarLinks = [
        
     },
      {
-        label: "Cuộcc họp đã kết thúc",
+        label: "Cuộc họp đã kết thúc",
         imgUrl: "/icons/previous.svg",
         route: "/previous",
        

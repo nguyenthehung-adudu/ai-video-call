@@ -227,6 +227,81 @@ button .cl-providerIcon__github {
 .str-video__call-controls__button {
 
 }
+/* ========================== STREAM CHAT THEME VARS ========================== */
+:root {
+  --chat-bg: var(--dark-1);
+  --chat-bg-secondary: var(--dark-2);
+  --chat-border: var(--dark-3);
+  --chat-primary: var(--blue-1);
+  --chat-text: #ffffff;
+  --chat-muted: #a0a0a0;
+}
+
+/* ========================== STREAM CHAT FIX ========================== */
+
+.str-chat,
+.str-chat__container,
+.str-chat__main-panel,
+.str-chat__message-list {
+  background-color: var(--chat-bg) !important;
+  color: var(--chat-text) !important;
+}
+
+.str-chat__message-list {
+  background-color: var(--chat-bg) !important;
+}
+
+.str-chat__message--me .str-chat__message-simple__content {
+  background-color: var(--chat-primary) !important;
+  color: var(--chat-text) !important;
+}
+
+.str-chat__message-simple__content {
+  background-color: var(--chat-bg-secondary) !important;
+  color: var(--chat-text) !important;
+  border-radius: 18px !important;
+}
+
+.str-chat__message-input {
+  background-color: var(--chat-bg-secondary) !important;
+  border-top: 1px solid var(--chat-border) !important;
+}
+
+.str-chat__input-flat {
+  background-color: var(--chat-bg-secondary) !important;
+  color: var(--chat-text) !important;
+}
+
+.str-chat__input-flat input {
+  color: var(--chat-text) !important;
+  background-color: transparent !important;
+}
+
+.str-chat__channel {
+  background-color: var(--chat-bg) !important;
+}
+
+.str-chat__avatar {
+  border: 2px solid var(--chat-border) !important;
+}
+
+.str-chat__message-status {
+  color: var(--chat-muted) !important;
+}
+
+/* Scrollbar */
+.str-chat__message-list::-webkit-scrollbar {
+  width: 4px;
+}
+
+.str-chat__message-list::-webkit-scrollbar-track {
+  background: var(--chat-bg-secondary);
+}
+
+.str-chat__message-list::-webkit-scrollbar-thumb {
+  background: var(--chat-border);
+  border-radius: 2px;
+}
 
 /* ========================== GLASSMORPHISM ========================== */
 .glassmorphism {
@@ -279,4 +354,21 @@ button .cl-providerIcon__github {
     animation-timing-function: ease-in;
     width: 100%;
   }
+}
+/* ========================== avatar ========================== */
+.str-chat__avatar {
+  display: none ;
+}
+
+.str-chat__avatar img {
+  width: 32px;
+  height: 32px;
+  border-radius: 999px;
+}
+
+/* layout message */
+.str-chat__li {
+  display: flex;
+  align-items: flex-end;
+  gap: 8px;
 }

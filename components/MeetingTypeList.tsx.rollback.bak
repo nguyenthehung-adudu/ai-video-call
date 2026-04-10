@@ -12,24 +12,7 @@ import 'react-datepicker/dist/react-datepicker.css';
 import { registerLocale } from 'react-datepicker';
 import { vi } from 'date-fns/locale/vi';
 import { Input } from './ui/input';
-import { buildInvitedEmailsStr, parseEmailList } from '@/lib/invite';
-import { memberAvatarUrl } from '@/lib/participant-avatar';
-import { useEffect, useRef } from 'react';
-
 registerLocale('vi', vi);
-
-// 👤 Real avatar helper via queryMembers on the scheduled call
-async function fetchScheduledCallAvatars(call: Call) {
-  try {
-    const { members } = await call.queryMembers({ limit: 12 });
-    return members.map((m) => ({
-      src: memberAvatarUrl(m.user?.image, m.user?.name || m.user_id),
-      alt: m.user?.name || m.user_id,
-    }));
-  } catch {
-    return [];
-  }
-}
 
 const MeetingTypeList = () => {
   const router = useRouter();
@@ -44,18 +27,13 @@ const MeetingTypeList = () => {
   const [values, setValues] = useState({
     dateTime: new Date(),
     meetingName: '',
-    invitedEmails: '',
     link: '',
   });
 
   const [callDetail, setCallDetail] = useState<Call>();
-  const [scheduledAvatars, setScheduledAvatars] = useState<
-    { src: string; alt: string }[]
-  >([]);
 
   const { toast } = useToast();
 
-  // ── Scheduled ────────────────────────────────────────────────
   const createScheduledMeeting = async () => {
     if (!client || !user) return;
 
@@ -64,53 +42,42 @@ const MeetingTypeList = () => {
         toast({ title: 'Please select a date and time' });
         return;
       }
-
       const id = crypto.randomUUID();
       const call = client.call('default', id);
+
       if (!call) throw new Error('Failed to create meeting');
 
-      const meetingName = values.meetingName.trim() || 'Cuộc họp đã lên lịch';
-      const startsAt = values.dateTime.toISOString();
-
-      const invited = parseEmailList(values.invitedEmails);
-      const invitedEmailsStr = buildInvitedEmailsStr(invited);
+      const startsAt =
+        values.dateTime.toISOString() || new Date(Date.now()).toISOString();
+      const meetingName =
+        values.meetingName.trim() || 'Cuộc họp đã lên lịch';
 
       await call.getOrCreate({
         data: {
           starts_at: startsAt,
           custom: {
             description: meetingName,
-            invitedEmails: invited,
-            invitedEmailsStr,
           },
         },
       });
 
-      // Also upsert chat channel so invited users can access the channel
-      const allIds = [user.id]; // TODO: resolve email → userId for real notifications
-      const { ensureMeetingChatChannel } = await import('@/actions/stream.actions');
-      await ensureMeetingChatChannel(call.id, allIds);
-
       setCallDetail(call);
-
-      const avatars = await fetchScheduledCallAvatars(call);
-      setScheduledAvatars(avatars);
-
-      const link = `${process.env.NEXT_PUBLIC_BASE_URL}/meeting/${call.id}`;
-      console.log('[invite:mock] Would notify:', invited, 'link:', link);
 
       if (!values.meetingName.trim()) {
         router.push(`/meeting/${call.id}`);
       }
 
-      toast({ title: 'Meeting Created' });
+      toast({
+        title: 'Meeting Created',
+      });
     } catch (error) {
-      console.error(error);
-      toast({ title: 'Error creating meeting' });
+      console.log(error);
+      toast({
+        title: 'Error creating meeting',
+      });
     }
   };
 
-  // ── Instant ────────────────────────────────────────────────
   const createInstantMeeting = async () => {
     if (!client || !user) return;
 
@@ -119,7 +86,8 @@ const MeetingTypeList = () => {
       const call = client.call('default', id);
       if (!call) throw new Error('Failed to create meeting');
 
-      const meetingName = values.meetingName.trim() || 'Cuộc họp nhanh';
+      const meetingName =
+        values.meetingName.trim() || 'Cuộc họp nhanh';
 
       await call.getOrCreate({
         data: {
@@ -134,7 +102,7 @@ const MeetingTypeList = () => {
       toast({ title: 'Đang vào phòng…' });
       setMeetingState(undefined);
     } catch (error) {
-      console.error(error);
+      console.log(error);
       toast({ title: 'Error creating meeting' });
     }
   };
@@ -146,10 +114,11 @@ const MeetingTypeList = () => {
       <HomeCard
         img="/icons/add-meeting.svg"
         title="Tạo cuộc họp mới"
-        description="Bắt đầu cuộc họp ngay"
+        description="Bắt đầu cuộc họp ngay "
         handleClick={() => setMeetingState('isInstantMeeting')}
         className="bg-orange-1"
       />
+
       <HomeCard
         img="/icons/join-meeting.svg"
         title="Tham gia cuộc họp"
@@ -157,6 +126,7 @@ const MeetingTypeList = () => {
         handleClick={() => setMeetingState('isJoiningMeeting')}
         className="bg-blue-1"
       />
+
       <HomeCard
         img="/icons/schedule.svg"
         title="Lên lịch cuộc họp"
@@ -164,15 +134,15 @@ const MeetingTypeList = () => {
         handleClick={() => setMeetingState('isScheduleMeeting')}
         className="bg-purple-1"
       />
+
       <HomeCard
         img="/icons/recordings.svg"
         title="Xem bản ghi"
-        description="Xem lại các cuộc họp"
+        description="Xem lại các cuộc họp "
         handleClick={() => router.push('/recordings')}
         className="bg-yellow-1"
       />
 
-      {/* ── Schedule modal ── */}
       {!callDetail ? (
         <MeetingModal
           isOpen={meetingState === 'isScheduleMeeting'}
@@ -190,19 +160,6 @@ const MeetingTypeList = () => {
               value={values.meetingName}
               onChange={(e) =>
                 setValues({ ...values, meetingName: e.target.value })
-              }
-            />
-          </div>
-          <div className="flex flex-col gap-2.5">
-            <label className="text-base leading-[22px] text-sky-2">
-              Mời qua email (cách nhau bởi dấu phẩy)
-            </label>
-            <Input
-              placeholder="email1@domain.com, email2@domain.com"
-              className="border-none bg-dark-3 focus-visible:ring-0 focus-visible:ring-offset-0"
-              value={values.invitedEmails}
-              onChange={(e) =>
-                setValues({ ...values, invitedEmails: e.target.value })
               }
             />
           </div>
@@ -239,8 +196,6 @@ const MeetingTypeList = () => {
           buttonText="Sao chép liên kết"
         />
       )}
-
-      {/* ── Instant modal ── */}
       <MeetingModal
         isOpen={meetingState === 'isInstantMeeting'}
         onClose={() => setMeetingState(undefined)}
@@ -251,7 +206,7 @@ const MeetingTypeList = () => {
       >
         <div className="flex flex-col gap-2.5 text-left">
           <label className="text-base leading-[22px] text-sky-2">
-            Tên phòng
+            Tên phòng (hiển thị cho mọi người)
           </label>
           <Input
             placeholder="Nhập tên cuộc họp"
@@ -263,18 +218,16 @@ const MeetingTypeList = () => {
           />
         </div>
       </MeetingModal>
-
-      {/* ── Join modal ── */}
       <MeetingModal
         isOpen={meetingState === 'isJoiningMeeting'}
         onClose={() => setMeetingState(undefined)}
-        title="Tham gia cuộc họp"
+        title="Type the link here"
         className="text-center"
         buttonText="Join Meeting"
         handleClick={() => router.push(values.link)}
       >
         <Input
-          placeholder="Paste meeting link here"
+          placeholder="Meeting link"
           onChange={(e) => setValues({ ...values, link: e.target.value })}
           className="border-none bg-dark-3 focus-visible:ring-0 focus-visible:ring-offset-0"
         />
