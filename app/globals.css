@@ -229,78 +229,306 @@ button .cl-providerIcon__github {
 }
 /* ========================== STREAM CHAT THEME VARS ========================== */
 :root {
-  --chat-bg: var(--dark-1);
-  --chat-bg-secondary: var(--dark-2);
-  --chat-border: var(--dark-3);
-  --chat-primary: var(--blue-1);
+  --chat-bg: #1C1F2E;
+  --chat-bg-secondary: #161925;
+  --chat-border: #252A41;
+  --chat-primary: #0E78F9;
+  --chat-primary-foreground: #ffffff;
   --chat-text: #ffffff;
-  --chat-muted: #a0a0a0;
+  --chat-muted: #8899aa;
+  --chat-sent-bg: #0E78F9;
+  --chat-received-bg: #252A41;
+  --chat-header-bg: #1C1F2E;
+  --chat-input-bg: #161925;
+  --chat-avatar-border: #0E78F9;
 }
 
-/* ========================== STREAM CHAT FIX ========================== */
+/* ========================== STREAM CHAT — FULL DARK THEME ========================== */
 
+/* Root container */
 .str-chat,
 .str-chat__container,
-.str-chat__main-panel,
-.str-chat__message-list {
-  background-color: var(--chat-bg) !important;
-  color: var(--chat-text) !important;
-}
-
-.str-chat__message-list {
+.str-chat__main-panel {
   background-color: var(--chat-bg) !important;
 }
 
-.str-chat__message--me .str-chat__message-simple__content {
-  background-color: var(--chat-primary) !important;
-  color: var(--chat-text) !important;
+/* Channel wrapper */
+.str-chat__channel {
+  background-color: var(--chat-bg) !important;
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+}
+
+/* Message list area */
+.str-chat__list {
+  background-color: var(--chat-bg) !important;
+  scrollbar-width: thin;
+  scrollbar-color: var(--chat-border) var(--chat-bg-secondary);
+}
+
+.str-chat__list::-webkit-scrollbar {
+  width: 4px;
+}
+.str-chat__list::-webkit-scrollbar-track {
+  background: var(--chat-bg-secondary);
+}
+.str-chat__list::-webkit-scrollbar-thumb {
+  background: var(--chat-border);
+  border-radius: 2px;
+}
+
+/* Individual message li */
+.str-chat__li {
+  display: flex;
+  align-items: flex-end;
+  gap: 8px;
+  padding: 4px 12px;
+}
+
+/* Avatar */
+.str-chat__avatar {
+  width: 32px !important;
+  height: 32px !important;
+  border-radius: 999px !important;
+  border: 2px solid var(--chat-avatar-border) !important;
+  object-fit: cover;
+  flex-shrink: 0;
+}
+
+.str-chat__avatar img,
+.str-chat__avatar span {
+  width: 32px;
+  height: 32px;
+  border-radius: 999px;
+}
+
+/* Message bubble — received (others) */
+.str-chat__message-simple {
+  max-width: 80%;
 }
 
 .str-chat__message-simple__content {
-  background-color: var(--chat-bg-secondary) !important;
+  background-color: var(--chat-received-bg) !important;
   color: var(--chat-text) !important;
-  border-radius: 18px !important;
+  border-radius: 16px 16px 16px 4px !important;
+  padding: 8px 12px !important;
+  font-size: 14px !important;
 }
 
-.str-chat__message-input {
-  background-color: var(--chat-bg-secondary) !important;
-  border-top: 1px solid var(--chat-border) !important;
+/* Message bubble — sent (me) */
+.str-chat__message--me .str-chat__message-simple__content {
+  background-color: var(--chat-sent-bg) !important;
+  color: var(--chat-primary-foreground) !important;
+  border-radius: 16px 16px 4px 16px !important;
 }
 
-.str-chat__input-flat {
-  background-color: var(--chat-bg-secondary) !important;
-  color: var(--chat-text) !important;
+/* Text inside message */
+.str-chat__message-simple__text {
+  color: inherit !important;
+  font-size: 14px;
+  line-height: 1.4;
 }
 
-.str-chat__input-flat input {
-  color: var(--chat-text) !important;
-  background-color: transparent !important;
+/* Author name */
+.str-chat__message-simple__author {
+  color: var(--chat-muted) !important;
+  font-size: 11px;
+  font-weight: 500;
+  margin-bottom: 2px;
 }
 
-.str-chat__channel {
-  background-color: var(--chat-bg) !important;
+/* Timestamp */
+.str-chat__message-simple__timestamp {
+  color: var(--chat-muted) !important;
+  font-size: 10px;
+  margin-top: 2px;
 }
 
-.str-chat__avatar {
-  border: 2px solid var(--chat-border) !important;
-}
-
+/* Status (delivered, read) */
 .str-chat__message-status {
+  color: var(--chat-muted) !important;
+  font-size: 10px;
+}
+
+/* Input area */
+.str-chat__input {
+  background-color: var(--chat-input-bg) !important;
+  border-top: 1px solid var(--chat-border) !important;
+  padding: 12px 16px !important;
+}
+
+/* Input flat wrapper */
+.str-chat__input-flat {
+  background-color: var(--chat-input-bg) !important;
+  border: 1px solid var(--chat-border) !important;
+  border-radius: 24px !important;
+  padding: 10px 16px !important;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+/* Textarea */
+.str-chat__input-flat__textarea {
+  background-color: transparent !important;
+  color: var(--chat-text) !important;
+  font-size: 14px;
+  resize: none;
+  min-height: 20px;
+  max-height: 100px;
+}
+
+.str-chat__input-flat__textarea::placeholder {
   color: var(--chat-muted) !important;
 }
 
-/* Scrollbar */
-.str-chat__message-list::-webkit-scrollbar {
-  width: 4px;
+/* Send button */
+.str-chat__send-button {
+  color: var(--chat-primary) !important;
+  flex-shrink: 0;
 }
 
-.str-chat__message-list::-webkit-scrollbar-track {
-  background: var(--chat-bg-secondary);
+/* Header */
+.str-chat__channel-header {
+  background-color: var(--chat-header-bg) !important;
+  border-bottom: 1px solid var(--chat-border) !important;
+  padding: 12px 16px !important;
+  color: var(--chat-text) !important;
 }
 
-.str-chat__message-list::-webkit-scrollbar-thumb {
-  background: var(--chat-border);
-  border-radius: 2px;
+/* Thread */
+.str-chat__thread-header {
+  background-color: var(--chat-bg) !important;
+  border-left: 1px solid var(--chat-border) !important;
+  color: var(--chat-text) !important;
+}
+
+/* Typing indicator */
+.str-chat__typing-indicator {
+  background-color: var(--chat-bg) !important;
+  color: var(--chat-muted) !important;
+  font-size: 12px;
+  padding: 4px 12px;
+}
+
+/* Date separator */
+.str-chat__date-separator {
+  color: var(--chat-muted) !important;
+}
+
+/* Reaction picker */
+.str-video__reaction-button,
+.str-chat__reaction-picker {
+  background-color: var(--chat-bg-secondary) !important;
+  color: var(--chat-text) !important;
+}
+
+/* Emoji picker */
+.str-chat__emoji-picker {
+  background-color: var(--chat-bg-secondary) !important;
+  border: 1px solid var(--chat-border) !important;
+}
+
+/* Thread indicator */
+.str-chat__thread-indicator {
+  background-color: var(--chat-bg) !important;
+}
+
+/* Unread notification */
+.str-chat__unread-badge {
+  background-color: var(--chat-primary) !important;
+  color: white !important;
+  font-size: 11px;
+  border-radius: 999px;
+  padding: 2px 6px;
+}
+
+/* Quoted message */
+.str-chat__quoted-message-preview {
+  background-color: var(--chat-bg-secondary) !important;
+  border-left: 3px solid var(--chat-primary) !important;
+  color: var(--chat-muted) !important;
+  border-radius: 8px !important;
+  padding: 4px 8px !important;
+}
+
+/* Edit message input */
+.str-chat__edit-message-form {
+  background-color: var(--chat-input-bg) !important;
+}
+
+/* Custom commands */
+.str-chat__slash-command {
+  background-color: var(--chat-bg-secondary) !important;
+}
+
+/* ────────────── Avatar show/hide logic ────────────── */
+.str-chat__li.str-chat__li--me .str-chat__avatar {
+  order: 2; /* avatar on right for my messages */
+}
+
+.str-chat__li:not(.str-chat__li--me) .str-chat__avatar {
+  order: 0; /* avatar on left for received messages */
+}
+
+/* ========================== STREAM CHAT LAYOUT FIX ========================== */
+
+/* Window fills parent height and manages flex layout internally */
+.str-chat__window {
+  display: flex !important;
+  flex-direction: column !important;
+  height: 100% !important;
+  min-height: 0 !important;
+  overflow: hidden !important;
+}
+
+/* Message list area — flex-grow to fill available space */
+.str-chat__list--scrollable {
+  flex: 1 1 auto !important;
+  min-height: 0 !important;
+  overflow-y: auto !important;
+  height: auto !important;
+  display: flex !important;
+  flex-direction: column !important;
+}
+
+/* List wrapper fills available space */
+.str-chat__list-wrapper {
+  flex: 1 !important;
+  min-height: 0 !important;
+  display: flex !important;
+  flex-direction: column !important;
+  height: 100% !important;
+}
+
+/* Channel inside window */
+.str-chat__channel {
+  height: 100% !important;
+  display: flex !important;
+  flex-direction: column !important;
+}
+
+/* Virtual list */
+.str-chat__virtual-list {
+  flex: 1 !important;
+  min-height: 0 !important;
+  overflow-y: auto !important;
+}
+
+/* MessageInput pinned at bottom */
+.str-chat__input-wrapper {
+  flex-shrink: 0 !important;
+}
+
+/* Fix: no extra padding/margin at top */
+.str-chat__list--scrollable {
+  padding-top: 0 !important;
+}
+
+/* Fix: smooth scrolling */
+.str-chat__virtual-list {
+  scroll-behavior: smooth;
 }
 
 /* ========================== GLASSMORPHISM ========================== */
@@ -355,20 +583,50 @@ button .cl-providerIcon__github {
     width: 100%;
   }
 }
-/* ========================== avatar ========================== */
-.str-chat__avatar {
-  display: none ;
+
+/* ========================== STREAM CHAT LAYOUT FIX ========================== */
+
+/* Ensure StreamChannel fills the parent container */
+.str-chat__channel {
+  height: 100% !important;
+  min-height: 0 !important;
 }
 
-.str-chat__avatar img {
-  width: 32px;
-  height: 32px;
-  border-radius: 999px;
+/* MessageList must fill available space */
+.str-chat__list--scrollable {
+  flex: 1 1 auto !important;
+  height: 100% !important;
+  overflow-y: auto !important;
 }
 
-/* layout message */
-.str-chat__li {
-  display: flex;
-  align-items: flex-end;
-  gap: 8px;
+/* Force MessageList container to expand */
+.str-chat__list-wrapper {
+  flex: 1 !important;
+  display: flex !important;
+  flex-direction: column !important;
+  min-height: 0 !important;
+}
+
+/* Input wrapper at bottom */
+.str-chat__input-wrapper {
+  flex-shrink: 0 !important;
+}
+
+/* Avatar fallback — ensure initials avatar shows */
+.str-chat__avatar.str-chat__avatar--rounded {
+  display: flex !important;
+  align-items: center !important;
+  justify-content: center !important;
+  overflow: hidden !important;
+}
+
+/* Fix: no blank space at top of message list */
+.str-chat__list--scrollable {
+  padding-top: 0 !important;
+  margin-top: 0 !important;
+}
+
+/* Fix: smooth scrolling */
+.str-chat__virtual-list {
+  scroll-behavior: smooth;
 }

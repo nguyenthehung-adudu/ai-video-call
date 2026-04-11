@@ -5,12 +5,18 @@ import { DeviceSettings } from '@stream-io/video-react-sdk'
 import { Button } from './ui/button'
 const MeetingSetup = ({setIsSetupComplete}:{setIsSetupComplete: (value:boolean) => void}) => {
   const [isMicCamToggledOn, setIsMicCamToggledOn] = useState(false);
-  
+
   const call = useCall();
+
+  useEffect(() => {
+    console.log('🟢 [MeetingSetup] Mounted');
+    return () => console.log('🔴 [MeetingSetup] Unmounted');
+  }, []);
 
   if(!call) {
     throw new Error('có gì đó sai sai .');
-  } 
+  }
+
   useEffect(() => {
     if (isMicCamToggledOn) {
       call?.camera.disable();

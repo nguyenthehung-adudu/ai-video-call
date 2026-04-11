@@ -14,7 +14,7 @@ import { vi } from 'date-fns/locale/vi';
 import { Input } from './ui/input';
 import { buildInvitedEmailsStr, parseEmailList } from '@/lib/invite';
 import { memberAvatarUrl } from '@/lib/participant-avatar';
-import { useEffect, useRef } from 'react';
+import { useStreamVideoReady } from '@/providers/StreamVideoProvider';
 
 registerLocale('vi', vi);
 
@@ -39,7 +39,7 @@ const MeetingTypeList = () => {
   >(undefined);
 
   const { user } = useUser();
-  const client = useStreamVideoClient();
+  const { client, isReady } = useStreamVideoReady();
 
   const [values, setValues] = useState({
     dateTime: new Date(),
@@ -57,7 +57,11 @@ const MeetingTypeList = () => {
 
   // ── Scheduled ────────────────────────────────────────────────
   const createScheduledMeeting = async () => {
-    if (!client || !user) return;
+    if (!isReady || !user) {
+      console.log('⛔ Block create scheduled meeting: not ready');
+      toast({ title: 'Đang kết nối, vui lòng chờ...' });
+      return;
+    }
 
     try {
       if (!values.dateTime) {
@@ -66,7 +70,7 @@ const MeetingTypeList = () => {
       }
 
       const id = crypto.randomUUID();
-      const call = client.call('default', id);
+      const call = client!.call('default', id);
       if (!call) throw new Error('Failed to create meeting');
 
       const meetingName = values.meetingName.trim() || 'Cuộc họp đã lên lịch';
@@ -112,15 +116,33 @@ const MeetingTypeList = () => {
 
   // ── Instant ────────────────────────────────────────────────
   const createInstantMeeting = async () => {
-    if (!client || !user) return;
+    console.log('🚀 [MeetingTypeList] createInstantMeeting called:', {
+      isReady,
+      hasClient: !!client,
+      hasUser: !!user,
+      userId: user?.id,
+    });
+
+    // FIX: Block if not ready
+    if (!isReady || !user) {
+      console.log('⛔ [MeetingTypeList] Cannot create meeting: not ready');
+      toast({ title: 'Đang kết nối, vui lòng chờ...' });
+      return;
+    }
 
     try {
       const id = crypto.randomUUID();
-      const call = client.call('default', id);
-      if (!call) throw new Error('Failed to create meeting');
+      console.log('📞 [MeetingTypeList] Creating call:', id);
+
+      const call = client!.call('default', id);
+      if (!call) {
+        console.error('❌ [MeetingTypeList] Failed to create call object');
+        throw new Error('Failed to create meeting');
+      }
 
       const meetingName = values.meetingName.trim() || 'Cuộc họp nhanh';
 
+      console.log('📞 [MeetingTypeList] Calling getOrCreate...');
       await call.getOrCreate({
         data: {
           starts_at: new Date().toISOString(),
@@ -130,14 +152,18 @@ const MeetingTypeList = () => {
         },
       });
 
+      console.log('✅ [MeetingTypeList] Meeting created:', call.id);
       router.push(`/meeting/${call.id}`);
       toast({ title: 'Đang vào phòng…' });
       setMeetingState(undefined);
     } catch (error) {
-      console.error(error);
+      console.error('❌ [MeetingTypeList] Error:', error);
       toast({ title: 'Error creating meeting' });
     }
   };
+
+  // Client is ready if isReady from provider is true (checks client.user.id)
+  const isClientReady = isReady && !!user;
 
   const meetingLink = `${process.env.NEXT_PUBLIC_BASE_URL}/meeting/${callDetail?.id}`;
 
@@ -246,8 +272,9 @@ const MeetingTypeList = () => {
         onClose={() => setMeetingState(undefined)}
         title="Tạo cuộc họp ngay"
         className="text-center"
-        buttonText="Vào phòng họp"
+        buttonText={isClientReady ? "Tạo phòng họp" : "Đang kết nối..."}
         handleClick={createInstantMeeting}
+        disabled={!isClientReady}
       >
         <div className="flex flex-col gap-2.5 text-left">
           <label className="text-base leading-[22px] text-sky-2">

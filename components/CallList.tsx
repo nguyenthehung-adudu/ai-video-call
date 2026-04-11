@@ -7,7 +7,7 @@ import MeetingCard, { ParticipantAvatar } from './MeetingCard';
 import { useEffect, useMemo, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { formatMeetingDateTime } from '@/lib/utils';
-import { memberAvatarUrl } from '@/lib/participant-avatar';
+import { memberAvatarUrl, dicebearInitials } from '@/lib/participant-avatar';
 import { isEmailInvited } from '@/lib/invite';
 import { useUser } from '@clerk/nextjs';
 
@@ -16,14 +16,27 @@ type RecordingWithCall = {
   recording: CallRecording;
 };
 
+/** Extract creator info from call state. */
+function getCreatorInfo(call: Call): ParticipantAvatar | null {
+  const creatorId = call.state.createdBy?.id;
+  const creatorName = call.state.createdBy?.name;
+  const creatorImage = call.state.createdBy?.image;
+  if (!creatorId) return null;
+  return {
+    src: memberAvatarUrl(creatorImage, creatorName || creatorId),
+    alt: creatorName || creatorId,
+  };
+}
+
 const CallList = ({ type }: { type: 'ended' | 'upcoming' | 'recordings' }) => {
   const router = useRouter();
   const { user } = useUser();
   const { endedCalls, upcomingCalls, callRecordings, isLoading } =
     useGetCalls();
   const [recordingsWithCall, setRecordingsWithCall] = useState<RecordingWithCall[]>([]);
-  // callId → real member avatars (fetched from Stream)
+  // callId → avatars from Stream members (only for ended/active calls)
   const [memberAvatars, setMemberAvatars] = useState<Record<string, ParticipantAvatar[]>>({});
+  const [isAvatarsLoading, setIsAvatarsLoading] = useState(false);
 
   const getCalls = () => {
     switch (type) {
@@ -51,7 +64,9 @@ const CallList = ({ type }: { type: 'ended' | 'upcoming' | 'recordings' }) => {
     }
   };
 
-  // Fetch member avatars for Upcoming/Ended calls
+  // ── Fetch member avatars for Ended/Upcoming calls ─────────────────────
+  // For ended calls: queryMembers returns actual participants
+  // For upcoming calls: queryMembers may return empty (meeting not started yet)
   const targetCalls = useMemo(() => {
     if (type === 'recordings') return [];
     return (type === 'ended' ? endedCalls : upcomingCalls) ?? [];
@@ -69,6 +84,7 @@ const CallList = ({ type }: { type: 'ended' | 'upcoming' | 'recordings' }) => {
     }
 
     let cancelled = false;
+    setIsAvatarsLoading(true);
 
     const load = async () => {
       const result: Record<string, ParticipantAvatar[]> = {};
@@ -78,27 +94,33 @@ const CallList = ({ type }: { type: 'ended' | 'upcoming' | 'recordings' }) => {
           try {
             const { members } = await call.queryMembers({ limit: 12 });
             if (cancelled) return;
-            result[call.id] = members.map((m) => ({
-              src: memberAvatarUrl(m.user?.image, m.user?.name || m.user_id),
-              alt: m.user?.name || m.user_id,
-            }));
+            if (members.length > 0) {
+              result[call.id] = members.map((m) => ({
+                src: memberAvatarUrl(m.user?.image, m.user?.name || m.user_id),
+                alt: m.user?.name || m.user_id,
+              }));
+            }
           } catch {
-            if (!cancelled) result[call.id] = [];
+            // silent — members not available yet
           }
         }),
       );
 
-      if (!cancelled) setMemberAvatars(result);
+      if (!cancelled) {
+        setMemberAvatars(result);
+        setIsAvatarsLoading(false);
+      }
     };
 
     void load();
 
     return () => {
       cancelled = true;
+      setIsAvatarsLoading(false);
     };
   }, [type, callIdsKey]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // Fetch recordings
+  // ── Fetch recordings ──────────────────────────────────────────────────
   useEffect(() => {
     if (type !== 'recordings' || !callRecordings?.length) {
       setRecordingsWithCall([]);
@@ -150,6 +172,26 @@ const CallList = ({ type }: { type: 'ended' | 'upcoming' | 'recordings' }) => {
     return isEmailInvited(searchStr, email);
   };
 
+  /**
+   * Resolve avatars for a call.
+   * Priority:
+   *   1. queryMembers results (real participants — ended calls, or started calls)
+   *   2. Fallback: Dicebear initials based on title
+   *   3. Creator avatar from call.state.createdBy
+   */
+  const resolveAvatars = (call: Call): ParticipantAvatar[] => {
+    const fromMembers = memberAvatars[call.id];
+    if (fromMembers && fromMembers.length > 0) return fromMembers;
+
+    const creator = getCreatorInfo(call);
+    if (creator) return [creator];
+
+    // Final fallback: Dicebear using meeting title
+    return [
+      { src: dicebearInitials(meetingTitle(call)), alt: meetingTitle(call) },
+    ];
+  };
+
   return (
     <div className="grid grid-cols-1 gap-5 xl:grid-cols-2">
       {calls && calls.length > 0 ? (
@@ -175,7 +217,7 @@ const CallList = ({ type }: { type: 'ended' | 'upcoming' | 'recordings' }) => {
               title={meetingTitle(meeting)}
               subtitle={meetingWhen(meeting)}
               isPreviousMeeting={type === 'ended'}
-              participantAvatars={memberAvatars[meeting.id]}
+              participantAvatars={resolveAvatars(meeting)}
               invitedBadge={type === 'upcoming' ? showInvitedBadge(meeting) : false}
               link={`${process.env.NEXT_PUBLIC_BASE_URL}/meeting/${meeting.id}`}
               buttonText="Start"

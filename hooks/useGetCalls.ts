@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useState, useRef, useCallback } from 'react';
 import { useUser } from '@clerk/nextjs';
 import { Call, useStreamVideoClient } from '@stream-io/video-react-sdk';
 
@@ -8,8 +8,27 @@ export const useGetCalls = () => {
   const [calls, setCalls] = useState<Call[]>();
   const [isLoading, setIsLoading] = useState(false);
 
+  // Ref to always have latest client in async functions
+  const clientRef = useRef(client);
+  clientRef.current = client;
+
+  // Ref to track if component is still mounted
+  const isMountedRef = useRef(true);
+
   useEffect(() => {
-    if (!client || !user?.id) return;
+    isMountedRef.current = true;
+    return () => {
+      isMountedRef.current = false;
+    };
+  }, []);
+
+  useEffect(() => {
+    const currentClient = clientRef.current;
+
+    if (!currentClient || !user?.id) {
+      console.log('⏳ [Calls] Skipping query:', { hasClient: !!currentClient, hasUser: !!user?.id });
+      return;
+    }
 
     setIsLoading(true);
 
@@ -26,7 +45,6 @@ export const useGetCalls = () => {
       ] as object[],
     };
 
-    // If user has an email, also search by invitedEmailsStr
     if (userEmail) {
       baseFilter.$or.push({
         'custom.invitedEmailsStr': {
@@ -36,10 +54,36 @@ export const useGetCalls = () => {
     }
 
     const load = async () => {
+      // Check if still mounted and client is valid
+      const activeClient = clientRef.current;
+      if (!activeClient || !isMountedRef.current) {
+        console.log('⏳ [Calls] Skipping load (no client or unmounted)');
+        setIsLoading(false);
+        return;
+      }
+
+      console.log('📞 [Calls] queryCalls START', {
+        userId: uid,
+        hasClient: !!activeClient,
+      });
+
       try {
-        const { calls: fetched } = await client.queryCalls({
+        const queryStart = Date.now();
+
+        const { calls: fetched } = await activeClient.queryCalls({
           sort: [{ field: 'starts_at', direction: -1 }],
           filter_conditions: baseFilter as never,
+        });
+
+        // Check if still mounted after async operation
+        if (!isMountedRef.current) {
+          console.log('⏳ [Calls] Component unmounted, skipping state update');
+          return;
+        }
+
+        console.log('✅ [Calls] queryCalls SUCCESS', {
+          count: fetched?.length ?? 0,
+          time: Date.now() - queryStart + 'ms',
         });
 
         const email = user.primaryEmailAddress?.emailAddress
@@ -48,10 +92,8 @@ export const useGetCalls = () => {
 
         const unique = new Map<string, Call>();
         for (const call of fetched ?? []) {
-          // Deduplicate by id
           if (unique.has(call.id)) continue;
 
-          // Client-side safety check for email invites
           const searchStr = call.state.custom?.invitedEmailsStr as
             | string
             | undefined;
@@ -72,10 +114,14 @@ export const useGetCalls = () => {
 
         setCalls([...unique.values()]);
       } catch (err) {
-        console.error('[useGetCalls] query failed, fallback:', err);
+        if (!isMountedRef.current) return;
+
+        console.error('❌ [Calls] queryCalls FAILED:', err);
         try {
-          // Fallback: basic creator/member filter without email search
-          const { calls: fb } = await client.queryCalls({
+          const fbStart = Date.now();
+          console.log('🔄 [Calls] Trying fallback query...');
+
+          const { calls: fb } = await activeClient.queryCalls({
             sort: [{ field: 'starts_at', direction: -1 }],
             filter_conditions: {
               starts_at: { $exists: true },
@@ -85,12 +131,23 @@ export const useGetCalls = () => {
               ],
             } as never,
           });
+
+          if (!isMountedRef.current) return;
+
+          console.log('✅ [Calls] Fallback SUCCESS', {
+            count: fb?.length ?? 0,
+            time: Date.now() - fbStart + 'ms',
+          });
+
           setCalls(fb ?? []);
         } catch (e2) {
-          console.error('[useGetCalls] fallback failed:', e2);
+          if (!isMountedRef.current) return;
+          console.error('❌ [Calls] Fallback FAILED:', e2);
         }
       } finally {
-        setIsLoading(false);
+        if (isMountedRef.current) {
+          setIsLoading(false);
+        }
       }
     };
 
