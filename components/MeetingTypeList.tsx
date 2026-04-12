@@ -95,13 +95,27 @@ const MeetingTypeList = () => {
       const { ensureMeetingChatChannel } = await import('@/actions/stream.actions');
       await ensureMeetingChatChannel(call.id, allIds);
 
+      // Send invitations to all invited emails
+      if (invited.length > 0) {
+        const { sendMeetingInvitation } = await import('@/actions/invite.actions');
+        for (const inviteeEmail of invited) {
+          await sendMeetingInvitation(call.id, inviteeEmail, {
+            type: 'scheduled',
+            scheduledAt: values.dateTime,
+            meetingName,
+            hostId: user.id,
+            hostName: user.fullName || user.primaryEmailAddress?.emailAddress || 'Người tổ chức',
+          });
+        }
+      }
+
       setCallDetail(call);
 
       const avatars = await fetchScheduledCallAvatars(call);
       setScheduledAvatars(avatars);
 
       const link = `${process.env.NEXT_PUBLIC_BASE_URL}/meeting/${call.id}`;
-      console.log('[invite:mock] Would notify:', invited, 'link:', link);
+      console.log('[invite] Scheduled notifications sent to:', invited, 'link:', link);
 
       if (!values.meetingName.trim()) {
         router.push(`/meeting/${call.id}`);

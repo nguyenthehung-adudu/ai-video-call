@@ -191,9 +191,38 @@ class ConnectionManager {
       this.videoClient = client;
       this._userId = uid;
 
-      // Wait for SDK to fetch token and initialize
-      console.log('⏳ [VideoManager] Waiting for SDK initialization...');
-      await new Promise((resolve) => setTimeout(resolve, 1500));
+      // Wait for SDK to actually connect and authenticate
+      console.log('⏳ [VideoManager] Waiting for SDK to authenticate...');
+      try {
+        await new Promise<void>((resolve, reject) => {
+          const timeout = setTimeout(() => {
+            reject(new Error('Auth timeout (10s)'));
+          }, 10000);
+
+          const handler = (event: { type: string; online: boolean }) => {
+            console.log('🌐 [VideoManager] SDK connection.changed:', event.online);
+            if (event.type === 'connection.changed' && event.online) {
+              clearTimeout(timeout);
+              client.off('connection.changed', handler);
+              resolve();
+            }
+          };
+
+          client.on('connection.changed', handler);
+
+          // Check if user is already connected via client.state.connectedUser
+          if (client.state.connectedUser?.id) {
+            console.log('✅ [VideoManager] Client user already connected');
+            clearTimeout(timeout);
+            client.off('connection.changed', handler);
+            resolve();
+          }
+        });
+        console.log('✅ [VideoManager] SDK authenticated successfully');
+      } catch (err) {
+        console.error('❌ [VideoManager] SDK authentication failed:', err);
+        throw err;
+      }
 
       this.status = 'ready';
       console.log('✅ [VideoManager] Marked as ready');

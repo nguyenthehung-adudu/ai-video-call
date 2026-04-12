@@ -15,6 +15,22 @@ export const tokenProvider = async (userId: string) => {
   return client.createToken(userId);
 };
 
+/** Delete a video call from Stream. */
+export async function deleteMeeting(meetingId: string, userId: string) {
+  if (!meetingId) return { success: false, message: 'Missing meetingId' };
+  if (!userId) return { success: false, message: 'Missing userId' };
+
+  try {
+    const client = new StreamClient(API_KEY, API_SECRET);
+    await client.video.call('default', meetingId).delete();
+    console.log(`✅ [DeleteMeeting] Deleted meeting: ${meetingId}`);
+    return { success: true };
+  } catch (error) {
+    console.error('❌ [DeleteMeeting] Failed:', error);
+    return { success: false, message: 'Không thể xóa cuộc họp' };
+  }
+}
+
 // ─── Chat ───────────────────────────────────────────────────────
 
 const dicebearAvatar = (seed: string) =>

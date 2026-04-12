@@ -1,4 +1,4 @@
-import { useEffect, useState, useRef, useCallback } from 'react';
+import { useEffect, useState, useRef, useMemo, useCallback } from 'react';
 import { useUser } from '@clerk/nextjs';
 import { Call, useStreamVideoClient } from '@stream-io/video-react-sdk';
 
@@ -8,9 +8,17 @@ export const useGetCalls = () => {
   const [calls, setCalls] = useState<Call[]>();
   const [isLoading, setIsLoading] = useState(false);
 
-  // Ref to always have latest client in async functions
+  // Stable refs to prevent dependency changes
   const clientRef = useRef(client);
-  clientRef.current = client;
+  const userIdRef = useRef<string | undefined>(user?.id);
+  const userEmailRef = useRef<string | undefined>(
+    user?.primaryEmailAddress?.emailAddress?.toLowerCase().trim()
+  );
+
+  // Update refs when user changes (not on every render)
+  if (user?.id !== userIdRef.current) userIdRef.current = user?.id;
+  const emailRaw = user?.primaryEmailAddress?.emailAddress?.toLowerCase().trim();
+  if (emailRaw !== userEmailRef.current) userEmailRef.current = emailRaw;
 
   // Ref to track if component is still mounted
   const isMountedRef = useRef(true);
@@ -22,27 +30,27 @@ export const useGetCalls = () => {
     };
   }, []);
 
-  useEffect(() => {
-    const currentClient = clientRef.current;
+  // Function to force refetch calls
+  const forceRefetch = useCallback(async () => {
+    const activeClient = clientRef.current;
+    const uid = userIdRef.current;
 
-    if (!currentClient || !user?.id) {
-      console.log('⏳ [Calls] Skipping query:', { hasClient: !!currentClient, hasUser: !!user?.id });
+    if (!activeClient || !uid) {
+      console.log('⏳ [Calls] Cannot refetch: no client or user');
       return;
     }
 
-    setIsLoading(true);
+    const userEmail = userEmailRef.current;
 
-    const uid = user.id;
-    const userEmail = user.primaryEmailAddress?.emailAddress
-      ?.toLowerCase()
-      .trim();
-
-    const baseFilter = {
+    type FilterCondition = Record<string, unknown>;
+    const baseFilter: FilterCondition & {
+      $or: Array<Record<string, unknown>>;
+    } = {
       starts_at: { $exists: true },
       $or: [
         { created_by_user_id: uid },
         { members: { $in: [uid] } },
-      ] as object[],
+      ],
     };
 
     if (userEmail) {
@@ -51,10 +59,84 @@ export const useGetCalls = () => {
           $regex: `\\|${userEmail.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\|`,
         },
       });
+      baseFilter.$or.push({
+        'custom.invitedEmails': {
+          $in: [userEmail],
+        },
+      });
+    }
+
+    try {
+      const { calls: fetched } = await activeClient.queryCalls({
+        sort: [{ field: 'starts_at', direction: -1 }],
+        filter_conditions: baseFilter as never,
+      });
+
+      const email = userEmailRef.current;
+      const unique = new Map<string, Call>();
+      for (const call of fetched ?? []) {
+        if (unique.has(call.id)) continue;
+
+        const searchStr = call.state.custom?.invitedEmailsStr as string | undefined;
+        const invitedEmailsArray = call.state.custom?.invitedEmails as string[] | undefined;
+        const hostId = call.state.createdBy?.id;
+        const isCreator = hostId === uid;
+        const isMember = call.state.members?.some((m) => m.user_id === uid);
+        const isInvitedStr = email && typeof searchStr === 'string' ? searchStr.includes(`|${email}|`) : false;
+        const isInvitedArray = email && Array.isArray(invitedEmailsArray) ? invitedEmailsArray.includes(email) : false;
+
+        if (isCreator || isMember || isInvitedStr || isInvitedArray) {
+          unique.set(call.id, call);
+        }
+      }
+
+      if (isMountedRef.current) {
+        setCalls([...unique.values()]);
+      }
+    } catch (error) {
+      console.error('❌ [Calls] Refetch failed:', error);
+    }
+  }, []);
+
+  useEffect(() => {
+    const currentClient = clientRef.current;
+    const uid = userIdRef.current;
+    const userEmail = userEmailRef.current;
+
+    if (!currentClient || !uid) {
+      console.log('⏳ [Calls] Skipping query:', { hasClient: !!currentClient, hasUser: !!uid });
+      return;
+    }
+
+    setIsLoading(true);
+
+    type FilterCondition = Record<string, unknown>;
+    const baseFilter: FilterCondition & {
+      $or: Array<Record<string, unknown>>;
+    } = {
+      starts_at: { $exists: true },
+      $or: [
+        { created_by_user_id: uid },
+        { members: { $in: [uid] } },
+      ],
+    };
+
+    if (userEmail) {
+      // Primary check: invitedEmailsStr with pipe delimiters
+      baseFilter.$or.push({
+        'custom.invitedEmailsStr': {
+          $regex: `\\|${userEmail.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\|`,
+        },
+      });
+      // Fallback: check invitedEmails array directly
+      baseFilter.$or.push({
+        'custom.invitedEmails': {
+          $in: [userEmail],
+        },
+      });
     }
 
     const load = async () => {
-      // Check if still mounted and client is valid
       const activeClient = clientRef.current;
       if (!activeClient || !isMountedRef.current) {
         console.log('⏳ [Calls] Skipping load (no client or unmounted)');
@@ -65,6 +147,7 @@ export const useGetCalls = () => {
       console.log('📞 [Calls] queryCalls START', {
         userId: uid,
         hasClient: !!activeClient,
+        userEmail,
       });
 
       try {
@@ -75,7 +158,6 @@ export const useGetCalls = () => {
           filter_conditions: baseFilter as never,
         });
 
-        // Check if still mounted after async operation
         if (!isMountedRef.current) {
           console.log('⏳ [Calls] Component unmounted, skipping state update');
           return;
@@ -85,10 +167,16 @@ export const useGetCalls = () => {
           count: fetched?.length ?? 0,
           time: Date.now() - queryStart + 'ms',
         });
+        console.log('📞 [Calls] Fetched calls:', fetched?.map(c => ({
+          id: c.id,
+          startsAt: c.state.startsAt,
+          description: c.state.custom?.description,
+          invitedEmails: c.state.custom?.invitedEmails,
+          invitedEmailsStr: c.state.custom?.invitedEmailsStr,
+          createdBy: c.state.createdBy?.id,
+        })));
 
-        const email = user.primaryEmailAddress?.emailAddress
-          ?.toLowerCase()
-          .trim();
+        const email = userEmailRef.current;
 
         const unique = new Map<string, Call>();
         for (const call of fetched ?? []) {
@@ -97,17 +185,26 @@ export const useGetCalls = () => {
           const searchStr = call.state.custom?.invitedEmailsStr as
             | string
             | undefined;
+          const invitedEmailsArray = call.state.custom?.invitedEmails as
+            | string[]
+            | undefined;
           const hostId = call.state.createdBy?.id;
           const isCreator = hostId === uid;
           const isMember = call.state.members?.some(
             (m) => m.user_id === uid,
           );
-          const isInvited =
+          // Check string format: |email|email|...
+          const isInvitedStr =
             email && typeof searchStr === 'string'
               ? searchStr.includes(`|${email}|`)
               : false;
+          // Also check array format: ['email1', 'email2']
+          const isInvitedArray =
+            email && Array.isArray(invitedEmailsArray)
+              ? invitedEmailsArray.includes(email)
+              : false;
 
-          if (isCreator || isMember || isInvited) {
+          if (isCreator || isMember || isInvitedStr || isInvitedArray) {
             unique.set(call.id, call);
           }
         }
@@ -152,21 +249,33 @@ export const useGetCalls = () => {
     };
 
     void load();
-  }, [
-    client,
-    user?.id,
-    user?.primaryEmailAddress?.emailAddress,
-  ]);
+  }, [client, user?.id]);
 
-  const now = new Date();
+  const endedCalls = useMemo(() => {
+    if (!calls) return undefined;
+    return calls
+      .filter(({ state: { startsAt, endedAt } }) => {
+        return !!endedAt || (!!startsAt && new Date(startsAt) < new Date());
+      })
+      .sort((a, b) => {
+        const aTime = a.state.startsAt ? new Date(a.state.startsAt).getTime() : 0;
+        const bTime = b.state.startsAt ? new Date(b.state.startsAt).getTime() : 0;
+        return bTime - aTime;
+      });
+  }, [calls]);
 
-  const endedCalls = calls?.filter(({ state: { startsAt, endedAt } }) => {
-    return !!endedAt || (!!startsAt && new Date(startsAt) < now);
-  });
+  const upcomingCalls = useMemo(() => {
+    if (!calls) return undefined;
+    return calls
+      .filter(({ state: { startsAt } }) => {
+        return !!startsAt && new Date(startsAt) > new Date();
+      })
+      .sort((a, b) => {
+        const aTime = a.state.startsAt ? new Date(a.state.startsAt).getTime() : 0;
+        const bTime = b.state.startsAt ? new Date(b.state.startsAt).getTime() : 0;
+        return aTime - bTime;
+      });
+  }, [calls]);
 
-  const upcomingCalls = calls?.filter(({ state: { startsAt } }) => {
-    return !!startsAt && new Date(startsAt) > now;
-  });
-
-  return { endedCalls, upcomingCalls, callRecordings: calls, isLoading };
+  return { endedCalls, upcomingCalls, callRecordings: calls, isLoading, forceRefetch };
 };

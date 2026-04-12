@@ -13,7 +13,7 @@ import {
 
 import { Users, LayoutList, MessageSquare, Link2, Mail } from "lucide-react";
 import { cn } from "@/lib/utils";
-import { useSearchParams } from "next/navigation";
+import { useRouter, useSearchParams } from 'next/navigation';
 
 import {
   DropdownMenu,
@@ -25,7 +25,6 @@ import {
 import EndCallButton from "./EndCallButton";
 import Loader from "./Loader";
 import MeetingChat from "./MeetingChat";
-
 type CallLayoutType = "grid" | "speaker-left" | "speaker-right";
 
 // ── Memoized layout switcher ──────────────────────────────────────────────
@@ -68,9 +67,22 @@ const MeetingRoom = memo(({ meetingId }: { meetingId: string }) => {
   const [showChat, setShowChat] = useState(false);
   const [showInvite, setShowInvite] = useState(false);
   const [inviteEmail, setInviteEmail] = useState("");
+  const [inviteStatus, setInviteStatus] = useState<{
+    show: boolean;
+    success: boolean;
+    message: string;
+  }>({ show: false, success: false, message: '' });
 
   const { useCallCallingState } = useCallStateHooks();
   const callingState = useCallCallingState();
+
+  // Redirect when call ends (by host or any other reason)
+  useEffect(() => {
+    if (callingState === CallingState.LEFT || callingState === CallingState.RECONNECTING) {
+      console.log('🚪 [MeetingRoom] Call ended/left, redirecting to home');
+      window.location.href = '/';
+    }
+  }, [callingState]);
 
   // Debug render logging
   console.log('🏠 [MeetingRoom] Render:', {
@@ -122,25 +134,45 @@ const MeetingRoom = memo(({ meetingId }: { meetingId: string }) => {
     navigator.clipboard.writeText(link);
     alert("Đã sao chép liên kết phòng!");
   }, []);
-  const handleInviteEmail = useCallback(() => {
+  const handleInviteEmail = useCallback(async () => {
+    console.log('🔔 [MeetingRoom] handleInviteEmail được gọi!');
+    console.log('🔔 [MeetingRoom] inviteEmail:', inviteEmail);
+    console.log('🔔 [MeetingRoom] meetingId:', meetingId);
+    
     const email = inviteEmail.trim();
     if (!email) {
-      alert("Vui lòng nhập email");
+      console.log('🔔 [MeetingRoom] Lỗi: Email trống');
+      setInviteStatus({ show: true, success: false, message: 'Vui lòng nhập email' });
+      setTimeout(() => setInviteStatus((s) => ({ ...s, show: false })), 3000);
       return;
     }
     if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
-      alert("Email không hợp lệ");
+      console.log('🔔 [MeetingRoom] Lỗi: Email không hợp lệ');
+      setInviteStatus({ show: true, success: false, message: 'Email không hợp lệ' });
+      setTimeout(() => setInviteStatus((s) => ({ ...s, show: false })), 3000);
       return;
     }
-    const link = window.location.href;
-    const subject = encodeURIComponent("Mời tham gia cuộc họp");
-    const body = encodeURIComponent(
-      `Xin chào!\n\nBạn được mời tham gia cuộc họp.\n\nNhấn vào liên kết để tham gia:\n${link}`
-    );
-    window.location.href = `mailto:${email}?subject=${subject}&body=${body}`;
-    setInviteEmail("");
-    setShowInvite(false);
-  }, [inviteEmail]);
+
+    console.log('🔔 [MeetingRoom] Đang gọi sendMeetingInvitation...');
+    // Call server action to save invitation
+    const { sendMeetingInvitation } = await import('@/actions/invite.actions');
+    const result = await sendMeetingInvitation(meetingId, email, { type: 'instant' });
+    console.log('🔔 [MeetingRoom] Kết quả từ server:', result);
+
+    if (result.success) {
+      console.log('🔔 [MeetingRoom] Thành công!');
+      setInviteStatus({ show: true, success: true, message: result.message });
+      setInviteEmail('');
+      setTimeout(() => {
+        setInviteStatus((s) => ({ ...s, show: false }));
+        setShowInvite(false);
+      }, 2000);
+    } else {
+      console.log('🔔 [MeetingRoom] Thất bại:', result.message);
+      setInviteStatus({ show: true, success: false, message: result.message });
+      setTimeout(() => setInviteStatus((s) => ({ ...s, show: false })), 3000);
+    }
+  }, [inviteEmail, meetingId]);
 
   if (callingState !== CallingState.JOINED) return <Loader />;
 
@@ -277,6 +309,29 @@ const MeetingRoom = memo(({ meetingId }: { meetingId: string }) => {
               Đóng
             </button>
           </div>
+        </div>
+      )}
+
+      {/* ── Toast Notification ───────────────────────────────────── */}
+      {inviteStatus.show && (
+        <div
+          className={cn(
+            "fixed top-4 left-1/2 -translate-x-1/2 z-[100] px-6 py-3 rounded-lg shadow-xl flex items-center gap-3 animate-in slide-in-from-top",
+            inviteStatus.success
+              ? "bg-green-600 text-white"
+              : "bg-red-600 text-white"
+          )}
+        >
+          {inviteStatus.success ? (
+            <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
+            </svg>
+          ) : (
+            <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+            </svg>
+          )}
+          <span className="font-medium">{inviteStatus.message}</span>
         </div>
       )}
     </div>

@@ -9,15 +9,15 @@ const Home = () => {
   const { upcomingCalls } = useGetCalls();
   const nextMeeting = upcomingCalls?.[0];
 
-const meetingTime = nextMeeting?.state?.startsAt
-  ? new Date(nextMeeting.state.startsAt).toLocaleString('vi-VN', {
-      hour: '2-digit',
-      minute: '2-digit',
-      day: '2-digit',
-      month: '2-digit',
-      year: 'numeric',
-    })
-  : null;
+  const meetingTime = nextMeeting?.state?.startsAt
+    ? new Date(nextMeeting.state.startsAt).toLocaleString('vi-VN', {
+        hour: '2-digit',
+        minute: '2-digit',
+        day: '2-digit',
+        month: '2-digit',
+        year: 'numeric',
+      })
+    : null;
 
   const time = now.toLocaleTimeString('vi-VN', {
     hour: '2-digit',

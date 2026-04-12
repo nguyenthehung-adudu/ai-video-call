@@ -1,0 +1,27 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+generator client {
+  provider = "prisma-client"
+  output   = "../lib/generated/prisma"
+}
+
+datasource db {
+  provider = "sqlite"
+}
+
+model Invitation {
+  id           String    @id @default(cuid())
+  meetingId    String
+  meetingName  String
+  hostId       String
+  hostName     String
+  inviteeEmail String
+  type        String    @default("scheduled")
+  scheduledAt DateTime?
+  isRead       Boolean   @default(false)
+  createdAt    DateTime  @default(now())
+
+  @@index([inviteeEmail])
+  @@index([isRead])
+}

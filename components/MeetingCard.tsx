@@ -3,6 +3,7 @@
 import { useToast } from './ui/use-toast';
 import { Button } from './ui/button';
 import { dicebearInitials } from '@/lib/participant-avatar';
+import { Trash2 } from 'lucide-react';
 
 export type ParticipantAvatar = {
   src: string;
@@ -24,6 +25,10 @@ interface MeetingCardProps {
   participantAvatars?: ParticipantAvatar[];
   /** Show when current user was invited but is not the host. */
   invitedBadge?: boolean;
+  /** Show delete button for upcoming meetings */
+  showDelete?: boolean;
+  /** Callback when delete button is clicked */
+  onDelete?: () => void;
 }
 
 const MeetingCard = ({
@@ -39,6 +44,8 @@ const MeetingCard = ({
   hideCopyLink,
   participantAvatars,
   invitedBadge,
+  showDelete,
+  onDelete,
 }: MeetingCardProps) => {
   const { toast } = useToast();
   const whenLine = subtitle ?? date ?? '—';
@@ -60,7 +67,21 @@ const MeetingCard = ({
         </div>
         <div className="flex justify-between">
           <div className="flex flex-col gap-2">
-            <h1 className="text-2xl font-bold">{title}</h1>
+            <div className="flex items-center gap-2">
+              <h1 className="text-2xl font-bold">{title}</h1>
+              {showDelete && onDelete && (
+                <button
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    onDelete();
+                  }}
+                  className="p-1.5 rounded-full hover:bg-red-500/20 transition-colors text-red-400 hover:text-red-300"
+                  title="Xóa cuộc họp"
+                >
+                  <Trash2 size={18} />
+                </button>
+              )}
+            </div>
             <p className="text-base font-normal text-sky-1">{whenLine}</p>
           </div>
         </div>

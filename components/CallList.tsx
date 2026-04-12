@@ -10,11 +10,38 @@ import { formatMeetingDateTime } from '@/lib/utils';
 import { memberAvatarUrl, dicebearInitials } from '@/lib/participant-avatar';
 import { isEmailInvited } from '@/lib/invite';
 import { useUser } from '@clerk/nextjs';
+import { Trash2, AlertTriangle } from 'lucide-react';
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from '@/components/ui/alert-dialog';
 
 type RecordingWithCall = {
   call: Call;
   recording: CallRecording;
 };
+
+/** Build participant avatar list for a call type. */
+async function fetchCallAvatars(call: Call) {
+  try {
+    const { members } = await call.queryMembers({ limit: 12 });
+    if (members.length > 0) {
+      return members.map((m) => ({
+        src: memberAvatarUrl(m.user?.image, m.user?.name || m.user_id),
+        alt: m.user?.name || m.user_id,
+      }));
+    }
+  } catch {
+    // silent
+  }
+  return [];
+}
 
 /** Extract creator info from call state. */
 function getCreatorInfo(call: Call): ParticipantAvatar | null {
@@ -28,15 +55,28 @@ function getCreatorInfo(call: Call): ParticipantAvatar | null {
   };
 }
 
+/** Build Dicebear avatar using full meeting title. */
+function getTitleFallbackAvatar(call: Call): ParticipantAvatar {
+  const title = call.state.custom?.description as string | undefined;
+  const displayTitle = title?.trim() || `Meeting ${call.id.slice(0, 8)}`;
+  // Use full title as seed for Dicebear
+  return { src: dicebearInitials(displayTitle), alt: displayTitle };
+}
+
 const CallList = ({ type }: { type: 'ended' | 'upcoming' | 'recordings' }) => {
   const router = useRouter();
   const { user } = useUser();
-  const { endedCalls, upcomingCalls, callRecordings, isLoading } =
+  const { endedCalls, upcomingCalls, callRecordings, isLoading, forceRefetch } =
     useGetCalls();
   const [recordingsWithCall, setRecordingsWithCall] = useState<RecordingWithCall[]>([]);
-  // callId → avatars from Stream members (only for ended/active calls)
+  // callId → avatars from Stream members
   const [memberAvatars, setMemberAvatars] = useState<Record<string, ParticipantAvatar[]>>({});
   const [isAvatarsLoading, setIsAvatarsLoading] = useState(false);
+  const [confirmDelete, setConfirmDelete] = useState<{
+    open: boolean;
+    meetingId: string;
+    meetingName: string;
+  }>({ open: false, meetingId: '', meetingName: '' });
 
   const getCalls = () => {
     switch (type) {
@@ -64,9 +104,36 @@ const CallList = ({ type }: { type: 'ended' | 'upcoming' | 'recordings' }) => {
     }
   };
 
-  // ── Fetch member avatars for Ended/Upcoming calls ─────────────────────
-  // For ended calls: queryMembers returns actual participants
-  // For upcoming calls: queryMembers may return empty (meeting not started yet)
+  // ── Delete handlers ────────────────────────────────────────────
+  const handleRequestDelete = (meetingId: string, meetingName: string) => {
+    setConfirmDelete({ open: true, meetingId, meetingName });
+  };
+
+  const handleConfirmDelete = async () => {
+    const { meetingId } = confirmDelete;
+    if (!meetingId || !user?.id) return;
+
+    try {
+      const { deleteMeeting } = await import('@/actions/stream.actions');
+      const result = await deleteMeeting(meetingId, user.id);
+      if (result.success) {
+        // Refresh the list
+        await forceRefetch();
+      } else {
+        console.error('Failed to delete meeting:', result.message);
+      }
+    } catch (error) {
+      console.error('Failed to delete meeting:', error);
+    }
+
+    setConfirmDelete({ open: false, meetingId: '', meetingName: '' });
+  };
+
+  const handleCancelDelete = () => {
+    setConfirmDelete({ open: false, meetingId: '', meetingName: '' });
+  };
+
+  // ── Fetch member avatars ───────────────────────────────────────────────
   const targetCalls = useMemo(() => {
     if (type === 'recordings') return [];
     return (type === 'ended' ? endedCalls : upcomingCalls) ?? [];
@@ -91,17 +158,11 @@ const CallList = ({ type }: { type: 'ended' | 'upcoming' | 'recordings' }) => {
 
       await Promise.all(
         targetCalls.map(async (call) => {
-          try {
-            const { members } = await call.queryMembers({ limit: 12 });
-            if (cancelled) return;
-            if (members.length > 0) {
-              result[call.id] = members.map((m) => ({
-                src: memberAvatarUrl(m.user?.image, m.user?.name || m.user_id),
-                alt: m.user?.name || m.user_id,
-              }));
-            }
-          } catch {
-            // silent — members not available yet
+          if (cancelled) return;
+          const avatars = await fetchCallAvatars(call);
+          if (cancelled) return;
+          if (avatars.length > 0) {
+            result[call.id] = avatars;
           }
         }),
       );
@@ -169,30 +230,61 @@ const CallList = ({ type }: { type: 'ended' | 'upcoming' | 'recordings' }) => {
     const hostId = call.state.createdBy?.id;
     if (hostId === user?.id) return false;
     const searchStr = call.state.custom?.invitedEmailsStr as string | undefined;
-    return isEmailInvited(searchStr, email);
+    const invitedArray = call.state.custom?.invitedEmails as string[] | undefined;
+    // Check both string format and array format
+    const hasInStr = searchStr && searchStr.includes(`|${email}|`);
+    const hasInArray = invitedArray && invitedArray.includes(email);
+    return isEmailInvited(searchStr, email) || !!hasInArray;
   };
 
   /**
    * Resolve avatars for a call.
-   * Priority:
-   *   1. queryMembers results (real participants — ended calls, or started calls)
-   *   2. Fallback: Dicebear initials based on title
-   *   3. Creator avatar from call.state.createdBy
+   * Ended: members who participated (from queryMembers)
+   * Upcoming: creator + Dicebear avatars for each invited email
    */
   const resolveAvatars = (call: Call): ParticipantAvatar[] => {
     const fromMembers = memberAvatars[call.id];
-    if (fromMembers && fromMembers.length > 0) return fromMembers;
 
-    const creator = getCreatorInfo(call);
-    if (creator) return [creator];
+    // Upcoming: show creator + Dicebear avatar for each invited email
+    if (type === 'upcoming') {
+      if (fromMembers && fromMembers.length > 0) return fromMembers;
 
-    // Final fallback: Dicebear using meeting title
-    return [
-      { src: dicebearInitials(meetingTitle(call)), alt: meetingTitle(call) },
-    ];
+      const result: ParticipantAvatar[] = [];
+
+      const creator = getCreatorInfo(call);
+      if (creator) result.push(creator);
+
+      // Get invited emails from custom data
+      const invitedEmails = call.state.custom?.invitedEmails as string[] | undefined;
+      if (invitedEmails && invitedEmails.length > 0) {
+        // Show Dicebear avatar for each invited email
+        for (const email of invitedEmails) {
+          result.push({
+            src: dicebearInitials(email),
+            alt: email,
+          });
+        }
+      }
+
+      // Only return avatars if we have creator or invitees
+      if (result.length > 0) return result;
+      // If no invitees, return empty array (no avatars shown)
+      return [];
+    }
+
+    // Ended: show members who participated
+    if (type === 'ended') {
+      if (fromMembers && fromMembers.length > 0) return fromMembers;
+      // If no members participated, return empty array (no avatars shown)
+      return [];
+    }
+
+    // Recordings: no avatars needed
+    return [];
   };
 
   return (
+    <>
     <div className="grid grid-cols-1 gap-5 xl:grid-cols-2">
       {calls && calls.length > 0 ? (
         type === 'recordings' ? (
@@ -219,6 +311,8 @@ const CallList = ({ type }: { type: 'ended' | 'upcoming' | 'recordings' }) => {
               isPreviousMeeting={type === 'ended'}
               participantAvatars={resolveAvatars(meeting)}
               invitedBadge={type === 'upcoming' ? showInvitedBadge(meeting) : false}
+              showDelete={type === 'upcoming'}
+              onDelete={() => handleRequestDelete(meeting.id, meetingTitle(meeting))}
               link={`${process.env.NEXT_PUBLIC_BASE_URL}/meeting/${meeting.id}`}
               buttonText="Start"
               handleClick={() => router.push(`/meeting/${meeting.id}`)}
@@ -229,6 +323,36 @@ const CallList = ({ type }: { type: 'ended' | 'upcoming' | 'recordings' }) => {
         <h1 className="text-2xl font-bold text-white">{noCallsMessage}</h1>
       )}
     </div>
+
+    <AlertDialog open={confirmDelete.open} onOpenChange={(open) => !open && handleCancelDelete()}>
+      <AlertDialogContent className="bg-dark-1 border-dark-3 text-white">
+        <AlertDialogHeader>
+          <AlertDialogTitle className="flex items-center gap-2">
+            <AlertTriangle className="text-red-500" size={20} />
+            Xác nhận xóa cuộc họp
+          </AlertDialogTitle>
+          <AlertDialogDescription className="text-white/60">
+            {"Bạn có chắc chắn muốn xóa cuộc họp \""}
+            <strong className="text-white">{confirmDelete.meetingName}</strong>
+            {"\" không?"}
+            <br />
+            <span className="text-yellow-500 text-sm">Hành động này không thể hoàn tác.</span>
+          </AlertDialogDescription>
+        </AlertDialogHeader>
+        <AlertDialogFooter className="flex gap-2">
+          <AlertDialogCancel className="bg-dark-3 text-white hover:bg-dark-2 border-dark-3">
+            Hủy bỏ
+          </AlertDialogCancel>
+          <AlertDialogAction
+            onClick={handleConfirmDelete}
+            className="bg-red-600 hover:bg-red-700 text-white"
+          >
+            Xóa cuộc họp
+          </AlertDialogAction>
+        </AlertDialogFooter>
+      </AlertDialogContent>
+    </AlertDialog>
+    </>
   );
 };
 
