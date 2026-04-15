@@ -31,6 +31,48 @@ export async function deleteMeeting(meetingId: string, userId: string) {
   }
 }
 
+/**
+ * Ensure personal room exists with proper settings.
+ * - Link is always fixed (meetingId = userId)
+ * - User becomes host automatically
+ * - No time limit (starts_at far in future)
+ */
+export async function ensurePersonalRoom(userId: string) {
+  if (!userId) return { success: false, message: 'Missing userId' };
+
+  try {
+    const client = new StreamClient(API_KEY, API_SECRET);
+    const call = client.video.call('default', userId);
+
+    // Check if call exists
+    try {
+      await call.get();
+      console.log(`📋 [PersonalRoom] Call already exists for user: ${userId}`);
+      return { success: true, meetingId: userId };
+    } catch {
+      // Call doesn't exist, create it
+    }
+
+    // Create personal room with settings:
+    // - starts_at: far in future (effectively permanent, no time limit)
+    // - created_by_id: userId (user becomes host automatically)
+    const startsAt = new Date('2099-01-01T00:00:00.000Z');
+
+    await call.getOrCreate({
+      data: {
+        starts_at: startsAt,
+        created_by_id: userId,
+      },
+    });
+
+    console.log(`✅ [PersonalRoom] Created personal room for user: ${userId}`);
+    return { success: true, meetingId: userId };
+  } catch (error) {
+    console.error('❌ [PersonalRoom] Failed:', error);
+    return { success: false, message: 'Không thể tạo phòng cá nhân' };
+  }
+}
+
 // ─── Chat ───────────────────────────────────────────────────────
 
 const dicebearAvatar = (seed: string) =>
@@ -76,7 +118,38 @@ export const upsertStreamChatUser = async (
   ]);
 };
 
-/** Ensure a chat channel exists for the meeting, adding missing members. */
+/**
+ * Get participant count for a personal room.
+ * Returns the number of users currently in the call.
+ */
+export async function getPersonalRoomParticipants(userId: string) {
+  if (!userId) return { success: false, count: 0 };
+
+  try {
+    const client = new StreamClient(API_KEY, API_SECRET);
+    const call = client.video.call('default', userId);
+
+    const response = await call.get();
+    const sessionId = response.call.current_session_id;
+
+    if (!sessionId) {
+      console.log(`📊 [Participants] No active session for user: ${userId}`);
+      return { success: true, count: 0, hasSession: false };
+    }
+
+    const participants = await call.listRecordings({ session_id: sessionId });
+    console.log(`📊 [Participants] Found ${participants.recordings?.length ?? 0} recordings for user: ${userId}`);
+
+    return {
+      success: true,
+      count: participants.recordings?.length ?? 0,
+      hasSession: true,
+    };
+  } catch (error) {
+    console.error('❌ [Participants] Failed:', error);
+    return { success: false, count: 0 };
+  }
+}
 export const ensureMeetingChatChannel = async (
   meetingId: string,
   memberIds: string[],

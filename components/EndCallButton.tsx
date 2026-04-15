@@ -9,10 +9,11 @@ const EndCallButton = () => {
   const call = useCall();
   const router = useRouter();
 
-  if (!call)
+  if (!call) {
     throw new Error(
       'useStreamCall must be used within a StreamCall component.',
     );
+  }
 
   const { useLocalParticipant } = useCallStateHooks();
   const localParticipant = useLocalParticipant();

@@ -195,17 +195,25 @@ const MeetingChat = React.memo(({ meetingId, onClose }: Props) => {
 
   // ── Initialize ─────────────────────────────────────────────────────────
   useEffect(() => {
+    if (!client) {
+      console.log('⏳ [Chat] Client not available yet');
+      return;
+    }
+
     if (channelIdRef.current !== channelId) {
       loadedRef.current = false;
       hasJoinedChannelRef.current = false;
       channelIdRef.current = channelId;
     }
 
-    if (loadedRef.current) return;
-    loadedRef.current = true;
+    if (loadedRef.current) {
+      console.log('✅ [Chat] Already loaded, skipping');
+      return;
+    }
 
+    console.log('📥 [Chat] Initializing with client');
     void loadMessages();
-  }, [channelId, loadMessages]);
+  }, [channelId, client, loadMessages]);
 
   // ── Listen for events ──────────────────────────────────────────────────
   useEffect(() => {

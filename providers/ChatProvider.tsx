@@ -176,7 +176,15 @@ const ChatProvider = ({ children }: { children: ReactNode }) => {
   const { user, isLoaded } = useUser();
   const [status, setStatus] = useState<ConnStatus>('idle');
   const [error, setError] = useState<string | null>(null);
-  const [client, setClient] = useState<StreamChat | null>(null);
+  const [client, setClient] = useState<StreamChat | null>(() => {
+    // Create client immediately on first render
+    console.log('🟢 [ChatProvider] Initial client creation');
+    const initialClient = StreamChat.getInstance(API_KEY);
+    initialClient.on('connection.changed', (event) => {
+      console.log(`🌐 [Chat] Connection: ${event.online ? 'ONLINE' : 'OFFLINE'}`);
+    });
+    return initialClient;
+  });
 
   const uidRef = useRef<string | null>(null);
   const displayNameRef = useRef<string>('');
@@ -202,11 +210,18 @@ const ChatProvider = ({ children }: { children: ReactNode }) => {
 
       setStatus(s);
       setError(e);
-      setClient(manager.client);
+      // Only update client if manager has a valid client
+      if (manager.client) {
+        setClient(manager.client);
+      }
     });
+
+    // Initial state - don't overwrite existing client
     setStatus(manager.status);
     setError(manager.error);
-    setClient(manager.client);
+    if (manager.client) {
+      setClient(manager.client);
+    }
 
     return () => {
       console.log('🔴 [ChatProvider] Unmounted');
@@ -218,12 +233,20 @@ const ChatProvider = ({ children }: { children: ReactNode }) => {
 
   // Init on Clerk load (runs once when user is available)
   useEffect(() => {
-    if (!isLoaded) return;
+    console.log('[ChatProvider] isLoaded:', isLoaded, 'user?.id:', user?.id);
 
+    // Connect when user ID is available, regardless of isLoaded
+    // (Clerk may have user ID before fully loaded)
     const uid = user?.id ?? null;
     if (!uid) {
+      console.log('[ChatProvider] No user ID, skipping');
       uidRef.current = null;
-      // Don't disconnect on uid change - just ignore
+      return;
+    }
+
+    // Avoid duplicate connections
+    if (uidRef.current === uid && status === 'connected') {
+      console.log('[ChatProvider] Already connected, skipping');
       return;
     }
 
@@ -234,10 +257,10 @@ const ChatProvider = ({ children }: { children: ReactNode }) => {
     displayNameRef.current = name;
     imageRef.current = image;
 
-    console.log('🚀 [ChatProvider] Starting connection:', { uid });
+    console.log('🚀 [ChatProvider] Starting connection:', { uid, isLoaded });
     void managerRef.current.connect(uid, name, image);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [isLoaded, user?.id]);
+  }, [user?.id, isLoaded]);
 
   // Visibility: reconnect with spam prevention
   useEffect(() => {
@@ -284,23 +307,26 @@ const ChatProvider = ({ children }: { children: ReactNode }) => {
     );
   }, [status]);
 
-  const isConnecting = status !== 'connected' || !client;
+  const isConnecting = status === 'connecting';
 
-  // Render - NEVER conditionally unmount children, use overlay instead
+  // DEBUG: Log state changes
+  console.log('[ChatProvider Render]', {
+    isLoaded,
+    status,
+    client: !!client,
+    isConnecting,
+  });
+
+  // Render - ALWAYS render Chat wrapper to provide context
   return (
     <>
-      {/* Always render Chat wrapper - never unmount children based on loading */}
-      {client ? (
-        <Chat client={client}>
-          {children}
-        </Chat>
-      ) : (
-        <>{children}</>
-      )}
+      <Chat client={client}>
+        {children}
+      </Chat>
 
-      {/* Overlay for loading/connecting state - use if user is loaded but chat is not */}
+      {/* Overlay for loading/connecting state - only show during active connecting */}
       {isLoaded && isConnecting && (
-        <div className="fixed inset-0 bg-dark-2/90 z-[40] flex flex-col items-center justify-center gap-4">
+        <div className="fixed inset-0 bg-dark-2/90 z-[30] flex flex-col items-center justify-center gap-4">
           <div className="w-8 h-8 border-4 border-blue-500 border-t-transparent rounded-full animate-spin" />
           {status === 'error' ? (
             <div className="flex flex-col items-center gap-4 text-red-400 text-center px-4">
