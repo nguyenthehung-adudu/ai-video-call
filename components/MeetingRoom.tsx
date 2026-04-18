@@ -127,11 +127,12 @@ const MeetingRoom = ({ meetingId }: { meetingId: string }) => {
   // ── Auto-show subtitles when first transcript arrives ─────────────────
   useEffect(() => {
     console.log("[MeetingRoom] Transcripts count:", allTranscripts.length, "showSubtitles:", showSubtitles);
+    console.log("[MeetingRoom] Transcripts data:", allTranscripts.map(t => ({ text: t.text, userId: t.userId, isFinal: t.isFinal })));
     if (allTranscripts.length > 0 && !showSubtitles) {
       console.log("[MeetingRoom] Auto-showing subtitles panel");
       setShowSubtitles(true);
     }
-  }, [allTranscripts.length, showSubtitles]);
+  }, [allTranscripts.length, showSubtitles, allTranscripts]);
 
   // ── Stable callbacks (empty deps) ─────────────────────────────────────
   const handleToggleParticipants = useCallback(() => {

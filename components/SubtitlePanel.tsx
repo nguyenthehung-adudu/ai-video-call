@@ -31,9 +31,9 @@ const SubtitlePanel: React.FC<SubtitlePanelProps> = ({ transcripts, onClose, cla
     }
   }, [transcripts.length]);
 
-  // Sort transcripts by timestamp (newest first)
+  // Sort transcripts by timestamp (NEWEST first)
   const sortedTranscripts = useMemo(() => {
-    return [...transcripts].sort((a, b) => a.timestamp - b.timestamp);
+    return [...transcripts].sort((a, b) => b.timestamp - a.timestamp);
   }, [transcripts]);
 
   // Group recent transcripts by user for display
@@ -110,10 +110,11 @@ const SubtitlePanel: React.FC<SubtitlePanelProps> = ({ transcripts, onClose, cla
             <p className="text-xs text-white/30">Bật AI để bắt đầu</p>
           </div>
         ) : (
-          <div className="space-y-4">
+          <div className="space-y-3">
             {userGroups.map((group) => {
-              const latestEntry = group.entries[group.entries.length - 1];
-              const previousEntries = group.entries.slice(0, -1);
+              // After sorting DESC, newest is at index 0
+              const latestEntry = group.entries[0];
+              const previousEntries = group.entries.slice(1); // older ones
 
               return (
                 <div
@@ -135,25 +136,56 @@ const SubtitlePanel: React.FC<SubtitlePanelProps> = ({ transcripts, onClose, cla
                     </span>
                   </div>
 
-                  {/* Latest transcript - prominent */}
+                  {/* Latest transcript - prominent (bilingual) */}
                   {latestEntry && (
                     <div className="pl-10">
-                      <p className="text-white/90 text-sm leading-relaxed">
+                      {/* Vietnamese (primary) */}
+                      <p className={cn(
+                        "text-white font-medium text-sm leading-relaxed",
+                        !latestEntry.isFinal && "opacity-70 italic" // Partial: slightly faded
+                      )}>
                         {latestEntry.text}
+                        {!latestEntry.isFinal && (
+                          <span className="inline-block ml-2 text-xs text-blue-400 font-normal">
+                            (đang nhận diện...)
+                          </span>
+                        )}
                       </p>
+
+                      {/* English translation (secondary, if available) */}
+                      {latestEntry.translated_text && (
+                        <p className="text-white/60 text-xs italic leading-relaxed mt-1">
+                          {latestEntry.translated_text}
+                        </p>
+                      )}
+
+                      {/* Timestamp */}
                       <span className="text-xs text-white/30 mt-1 block">
                         {formatTime(latestEntry.timestamp)}
+                        {!latestEntry.isFinal && " • Đang xử lý"}
                       </span>
                     </div>
                   )}
 
-                  {/* Previous transcripts - smaller, collapsed */}
+                  {/* Previous transcripts - compact list (older entries) */}
                   {previousEntries.length > 0 && (
                     <div className="pl-10 space-y-2 border-l-2 border-dark-3 ml-4">
-                      {previousEntries.slice(-3).map((entry) => (
+                      {previousEntries.slice(0, 3).map((entry) => (
                         <div key={entry.id} className="text-white/60 text-xs">
                           <span className="text-white/40">{formatTime(entry.timestamp)}</span>
-                          <span className="ml-2">{entry.text}</span>
+                          <div className="mt-0.5">
+                            <span className={cn(!entry.isFinal && "italic opacity-70")}>
+                              {entry.text}
+                            </span>
+                            {!entry.isFinal && (
+                              <span className="text-blue-400 text-[10px] ml-1">(partial)</span>
+                            )}
+                            {entry.translated_text && (
+                              <div className="text-white/40 italic mt-0.5">
+                                {entry.translated_text}
+                              </div>
+                            )}
+                          </div>
                         </div>
                       ))}
                       {previousEntries.length > 3 && (

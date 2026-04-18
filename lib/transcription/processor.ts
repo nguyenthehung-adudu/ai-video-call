@@ -6,14 +6,80 @@ export class TranscriptionProcessor {
   private userName: string;
   private callbacks: TranscriptionCallbacks | null = null;
   private mediaRecorder: MediaRecorder | null = null;
-  private headerChunk: Blob | null = null;   // Chunk đầu (chứa EBML header)
-  private clusters: Blob[] = [];              // Các chunk sau (chỉ clusters)
+  private chunks: Blob[] = [];
   private stream: MediaStream | null = null;
   private isRecording: boolean = false;
+  private isStopping: boolean = false;
+  private isFinalized: boolean = false;
   private isProcessing: boolean = false;
+  private finalFlushDone: boolean = false;
   private lastText: string = '';
   private lastHash: number = 0;
   private consecutiveEmpty: number = 0;
+  private stopPromiseResolver: (() => void) | null = null;
+
+  // ── BUFFERING CONFIG ────────────────────────────────────────────────────
+  private readonly CHUNK_DURATION_MS = 200;          // MediaRecorder timeslice
+  private readonly MIN_SEND_INTERVAL_MS = 2000;      // Cooldown: 2s between requests
+  private readonly MIN_AUDIO_SIZE_BYTES = 20 * 1024; // Minimum 20KB blob size
+  private readonly SILENCE_BEFORE_SEND_MS = 1200;    // Silence >= 1.2s triggers send
+
+  // ── STATE ───────────────────────────────────────────────────────────────
+  private lastSendTime: number = 0;                  // Throttle timestamp
+  private silenceStartTime: number | null = null;    // Track when silence began
+  private isCurrentlySpeaking: boolean = false;      // VAD state
+  private onVADStateChange: ((isSpeaking: boolean) => void) | null = null;
+
+  // Partial transcript tracking
+  private recentTranscripts: Map<number, { text: string; count: number; lastSeen: number }> = new Map();
+  private readonly STABILITY_WINDOW_MS = 1000;
+
+  /**
+   * 检查是否正在录音
+   */
+  getIsRecording(): boolean {
+    return this.isRecording;
+  }
+
+  /**
+   * 更新 VAD 状态（由外部 VAD 调用）
+   */
+  setSpeakingState(isSpeaking: boolean): void {
+    const wasSpeaking = this.isCurrentlySpeaking;
+    this.isCurrentlySpeaking = isSpeaking;
+
+    if (isSpeaking) {
+      // 说话开始：清除静音计时器
+      this.silenceStartTime = null;
+    } else {
+      // 静音开始：立即清除已缓冲的音频（防止重复发送）
+      // 并且记录时间供 evaluateBuffer 使用
+      if (this.silenceStartTime === null) {
+        this.silenceStartTime = Date.now();
+        this.clearChunksOnSilence();
+      }
+    }
+
+    this.onVADStateChange?.(isSpeaking);
+  }
+
+  /**
+   * 静音时清除缓冲的音频块（不发送）
+   * 用于防止静音期间累积的音频被重复使用
+   */
+  private clearChunksOnSilence(): void {
+    if (this.chunks.length > 0) {
+      console.log(`[Processor] 🗑️ Silence detected: cleared ${this.chunks.length} buffered chunks`);
+      this.chunks = [];
+    }
+  }
+
+  /**
+   * 设置 VAD 状态变化回调
+   */
+  setOnVADStateChange(callback: (isSpeaking: boolean) => void): void {
+    this.onVADStateChange = callback;
+  }
 
   constructor(
     options: TranscriptionProcessorOptions,
@@ -46,103 +112,159 @@ export class TranscriptionProcessor {
       return;
     }
 
+    // Reset state
     this.isRecording = true;
+    this.isStopping = false;
+    this.isFinalized = false;
     this.isProcessing = false;
-    this.headerChunk = null;  // Reset header (first chunk)
-    this.clusters = [];       // Reset clusters (rest of chunks)
+    this.finalFlushDone = false;
+    this.chunks = [];
     this.lastText = '';
     this.lastHash = 0;
     this.consecutiveEmpty = 0;
+    this.stopPromiseResolver = null;
+    this.lastSendTime = 0;
+    this.silenceStartTime = null;
+    this.isCurrentlySpeaking = false;
+    this.recentTranscripts.clear();
 
-    console.log("[Processor] Starting...");
+    console.log("[Processor] === START RECORDING ===");
     this.callbacks?.onStateChange("recording");
 
     try {
-      // FIX: Improved MediaRecorder config for stable WebM
-      // codecs=opus ensures valid audio encoding
-      // 128kbps provides good quality without excessive size
       const mimeType = 'audio/webm;codecs=opus';
-
       this.mediaRecorder = new MediaRecorder(this.stream, {
         mimeType,
         audioBitsPerSecond: 128000
       });
 
       this.mediaRecorder.ondataavailable = (event) => {
-        if (event.data.size > 0) {
-          console.log(`[Processor] Received chunk: ${event.data.size} bytes`);
+        if (event.data.size === 0) return;
 
-          // FIX: First chunk contains EBML header, store separately
-          if (this.headerChunk === null) {
-            this.headerChunk = event.data;
-            console.log("[Processor] Stored header chunk");
-          } else {
-            // Subsequent chunks are clusters (no header)
-            this.clusters.push(event.data);
-            console.log("[Processor] Stored cluster chunk, total clusters:", this.clusters.length);
-          }
+        if (this.isFinalized) {
+          console.log("[Processor] ⚠️ Late chunk after finalization, ignoring");
+          return;
         }
+
+        console.log(`[Processor] 📦 Chunk received: ${event.data.size} bytes`);
+        this.chunks.push(event.data);
+        console.log(`[Processor] ✅ Stored chunk #${this.chunks.length}`);
       };
 
       this.mediaRecorder.onerror = (error) => {
-        console.error("[Processor] Recorder error:", error);
+        console.error("[Processor] ❌ Recorder error:", error);
         this.callbacks?.onError("Recording error");
       };
 
-      // FIX: Timeslice 1000ms (1s chunks)
-      this.mediaRecorder.start(1000);
+      // 200ms chunks for fine-grained VAD
+      this.mediaRecorder.start(200);
+      console.log("[Processor] Started: 200ms chunks");
 
-      // FIX: Process every 2500ms (more stable, wait for multiple chunks)
-      const processInterval = setInterval(() => {
+      // BUFFER MONITOR: check every 150ms
+      const bufferMonitorInterval = setInterval(() => {
         if (!this.isRecording) {
-          clearInterval(processInterval);
+          clearInterval(bufferMonitorInterval);
           return;
         }
-        this.processBufferedChunks();
-      }, 2500);
+        this.evaluateBuffer().catch(console.error);
+      }, 150);
 
-      console.log("[Processor] Started with timeslice 1000ms, process interval 2500ms");
+      console.log("[Processor] Buffer monitor: 150ms interval");
 
     } catch (error) {
-      console.error("[Processor] Start failed:", error);
+      console.error("[Processor] ❌ Start failed:", error);
       this.callbacks?.onError("Không thể bắt đầu ghi âm");
       this.isRecording = false;
     }
   }
 
   /**
-   * FIX: Process buffered chunks with proper WebM structure
-   * First chunk = EBML header + first cluster
-   * Subsequent chunks = cluster data only (no header)
-   * Merge: headerChunk + all clusters → valid single WebM
+   * ── BUFFER EVALUATION ENGINE ─────────────────────────────────────────────
+   * 决定是否发送缓冲的音频数据
+   * 只在检测到 speech→silence transition 且静音超过阈值时发送
    */
-  private async processBufferedChunks(): Promise<void> {
-    if (!this.isRecording) return;
-    if (this.isProcessing) return;
-
-    // FIX: Need header + at least 1 cluster for valid audio
-    if (!this.headerChunk || this.clusters.length < 1) {
-      console.log(`[Processor] Waiting: header=${!!this.headerChunk}, clusters=${this.clusters.length}`);
+  private async evaluateBuffer(): Promise<void> {
+    // Skip if already processing (concurrency guard)
+    if (this.isProcessing) {
+      console.log("[Buffer] ⏳ Already processing, skipping evaluation");
       return;
     }
 
+    // Skip if no new chunks
+    if (this.chunks.length === 0) {
+      return;
+    }
+
+    // ── ONLY SEND ON SPEECH → SILENCE TRANSITION ───────────────────────────
+    // 只在用户停止说话（静音）且达到阈值时发送
+    // 说话过程中（isCurrentlySpeaking = true）绝不发送
+    if (this.isCurrentlySpeaking) {
+      console.log("[Buffer] ⏳ Still speaking, buffering...");
+      return;
+    }
+
+    const now = Date.now();
+    const silenceDuration = this.silenceStartTime ? now - this.silenceStartTime : 0;
+
+    // 静音时间必须足够长（确保用户已说完）
+    if (silenceDuration < this.SILENCE_BEFORE_SEND_MS) {
+      console.log(`[Buffer] ⏳ Silence too short (${silenceDuration}ms < ${this.SILENCE_BEFORE_SEND_MS}ms)`);
+      return;
+    }
+
+    // ── THROTTLE CHECK ────────────────────────────────────────────────────
+    const timeSinceLastSend = now - this.lastSendTime;
+    if (timeSinceLastSend < this.MIN_SEND_INTERVAL_MS) {
+      const remaining = this.MIN_SEND_INTERVAL_MS - timeSinceLastSend;
+      console.log(`[Buffer] ⏱️ Cooldown active: ${remaining}ms remaining`);
+      return;
+    }
+
+    // ── CHECK MINIMUM AUDIO SIZE ───────────────────────────────────────────
+    // 估算 blob 大小：每 chunk 约 200ms，~2KB/chunk @ 128kbps
+    // 更准确：直接构建 blob 检查
+    const estimatedBlobSize = this.chunks.reduce((acc, chunk) => acc + chunk.size, 0);
+
+    if (estimatedBlobSize < this.MIN_AUDIO_SIZE_BYTES) {
+      console.log(`[Buffer] ⚠️ Audio too small (${estimatedBlobSize} bytes < ${this.MIN_AUDIO_SIZE_BYTES} bytes), skipping and clearing`);
+      // 太小，清除并跳过
+      this.chunks = [];
+      this.silenceStartTime = null;
+      return;
+    }
+
+    // ── SEND ────────────────────────────────────────────────────────────────
+    console.log(`[Buffer] ✅ Speech→Silence detected after ${silenceDuration}ms, sending ${this.chunks.length} chunks (${estimatedBlobSize} bytes)`);
+    this.lastSendTime = now;
+    this.silenceStartTime = null;
+
+    // 发送当前 chunks（仅新累积的音频）
+    const chunksToSend = [...this.chunks];
+    this.chunks = []; // 立即清空，防止重复发送
+
+    this.processAndSend(chunksToSend, false).catch(console.error);
+  }
+
+  /**
+   * 发送音频到 Whisper API
+   * @param isFinalFlush 是否为最终刷新（停止录音时），此时跳过大小检查
+   */
+  private async processAndSend(chunksToSend: Blob[], isFinalFlush: boolean): Promise<void> {
     this.isProcessing = true;
 
     try {
-      // FIX: Debug - show structure
-      console.log("[Processor] Header chunk size:", this.headerChunk.size);
-      console.log("[Processor] Cluster count:", this.clusters.length);
+      const mergedBlob = new Blob(chunksToSend, { type: 'audio/webm' });
+      const estimatedDuration = chunksToSend.length * this.CHUNK_DURATION_MS;
 
-      // FIX: Build proper WebM: header + all clusters
-      const allParts = [this.headerChunk, ...this.clusters];
-      const mergedBlob = new Blob(allParts, { type: 'audio/webm' });
-      const totalSize = mergedBlob.size;
+      console.log(`[Send] 📤 ${isFinalFlush ? 'FINAL' : 'BUFFERED'} blob: ${mergedBlob.size} bytes, ~${estimatedDuration}ms (${chunksToSend.length} chunks)`);
 
-      console.log("[Processor] Merged blob size:", totalSize, "bytes");
-
-      // Clear buffer after merge
-      this.headerChunk = null;
-      this.clusters = [];
+      // ── MINIMUM SIZE CHECK ───────────────────────────────────────────────
+      // 非最终刷新必须满足最小大小，防止静音/噪声发送
+      if (!isFinalFlush && mergedBlob.size < this.MIN_AUDIO_SIZE_BYTES) {
+        console.log(`[Send] ⚠️ Audio too small (${mergedBlob.size} < ${this.MIN_AUDIO_SIZE_BYTES}), skipping`);
+        this.isProcessing = false;
+        return;
+      }
 
       const result = await this.sendToWhisperAPI(mergedBlob);
 
@@ -150,51 +272,181 @@ export class TranscriptionProcessor {
         const text = result.text.trim();
 
         if (text.length < 2) {
+          console.log("[Send] ⚠️ Text too short, skipping");
           this.isProcessing = false;
           return;
         }
 
         const hash = this.simpleHash(text);
-        if (hash === this.lastHash) {
-          console.log("[Processor] Duplicate hash");
-          this.isProcessing = false;
-          return;
+
+        // ── STABILITY TRACKING ─────────────────────────────────────────────
+        const now = Date.now();
+        const existing = this.recentTranscripts.get(hash);
+
+        let isStable = false;
+        if (existing) {
+          existing.count++;
+          existing.lastSeen = now;
+          if (existing.count >= 2) {
+            isStable = true;
+          }
+          this.cleanupOldTranscripts(now);
+        } else {
+          this.recentTranscripts.set(hash, { text, count: 1, lastSeen: now });
+          this.cleanupOldTranscripts(now);
         }
 
-        if (this.lastText) {
-          if (text.startsWith(this.lastText) || this.lastText.startsWith(text)) {
-            const ratio = Math.min(text.length, this.lastText.length) / Math.max(text.length, this.lastText.length);
-            if (ratio > 0.7) {
-              console.log("[Processor] Too similar, skipping");
-              this.isProcessing = false;
-              return;
-            }
-          }
+        const is_final = isStable || isFinalFlush;
+
+        // Skip exact duplicates for interim results
+        if (!is_final && hash === this.lastHash) {
+          console.log("[Send] 🔄 Exact duplicate interim, skipping");
+          this.isProcessing = false;
+          return;
         }
 
         this.lastText = text;
         this.lastHash = hash;
         this.consecutiveEmpty = 0;
 
-        console.log("[Processor] ✓", text);
+        console.log(`[Send] ✅ ${is_final ? 'FINAL' : 'PARTIAL'}: "${text.substring(0, 60)}..."`);
 
         this.callbacks?.onTranscript({
           final_display: text,
           is_valid: true,
           confidence: result.confidence || 0.85,
           reason: result.reason,
+          is_final: is_final,
         });
-
       } else {
         this.consecutiveEmpty++;
-        console.log("[Processor] Rejected:", result?.reason || 'empty');
+        console.log("[Send] ⚠️ Transcript rejected:", result?.reason || 'empty/invalid');
       }
 
     } catch (error) {
-      console.error("[Processor] Error:", error);
+      console.error("[Send] ❌ Error:", error);
       this.callbacks?.onError("API error");
     } finally {
       this.isProcessing = false;
+      this.trimChunks(); // 内存管理
+    }
+  }
+
+  /**
+   * ── MEMORY MANAGEMENT ─────────────────────────────────────────────────────
+   * 安全限制：防止意外累积过多 chunks
+   */
+  private trimChunks(): void {
+    const MAX_CHUNKS = 100; // ~20秒上限（保护性措施）
+
+    if (this.chunks.length > MAX_CHUNKS) {
+      const excess = this.chunks.length - MAX_CHUNKS;
+      this.chunks = this.chunks.slice(excess);
+      console.log(`[Processor] 🗑️ Safety trim: removed ${excess} old chunks, kept ${this.chunks.length}`);
+    }
+  }
+
+  /**
+   * ── ORIGINAL processBufferedChunks (保留用于最终刷新) ───────────────────
+   * final flush 会发送所有剩余 chunks 并清空缓冲区
+   */
+  private async processBufferedChunks(isFinalFlush: boolean = false): Promise<void> {
+    // 最终刷新时发送所有 chunk
+    if (isFinalFlush) {
+      const allChunks = [...this.chunks];
+      this.chunks = []; // 立即清空，防止重复
+      await this.processAndSend(allChunks, true);
+      return;
+    }
+
+    // 对于非最终刷新，此方法已被新的 evaluateBuffer 系统取代
+    // 保持空实现以避免中断
+    console.log("[Processor] ⚠️ processBufferedChunks called without evaluateBuffer, this should not happen");
+  }
+
+  /**
+   * Stop recording and guarantee final transcript
+   * - Waits 500ms for final chunks to arrive
+   * - Processes ALL accumulated audio
+   * - Awaits API result before resolving
+   */
+  stop(): Promise<void> {
+    console.log("[Processor] === STOP RECORDING === [ENTRY]");
+    return new Promise((resolve) => {
+      if (!this.isRecording) {
+        console.log("[Processor] Not recording, resolve immediately");
+        resolve();
+        return;
+      }
+
+      console.log("[Processor] === STOP RECORDING ===");
+      this.isRecording = false;
+      this.isStopping = true;
+      this.stopPromiseResolver = resolve;
+
+      if (this.mediaRecorder && this.mediaRecorder.state !== 'inactive') {
+        try {
+          console.log("[Processor] MediaRecorder state:", this.mediaRecorder.state);
+          console.log("[Processor] 🛑 Calling mediaRecorder.stop()");
+          this.mediaRecorder.stop();
+          console.log("[Processor] ⏳ [STOP FLUSH] Waiting 500ms for final chunks...");
+          setTimeout(() => {
+            console.log("[Processor] [STOP FLUSH] 500ms elapsed, finalizing...");
+            this.finalizeStop();
+          }, 800);
+        } catch (e) {
+          console.error("[Processor] ❌ Stop error:", e);
+          this.isStopping = false;
+          resolve();
+        }
+      } else {
+        console.log("[Processor] MediaRecorder already inactive");
+        this.finalizeStop();
+      }
+    });
+  }
+
+  /**
+   * Finalize stop: run final flush and cleanup
+   */
+  private async finalizeStop(): Promise<void> {
+    console.log("[Processor] 🔄 finalizeStop()");
+
+    // Wait for any ongoing interim processing
+    if (this.isProcessing) {
+      console.log("[Processor] ⏳ Waiting for ongoing processing to finish...");
+      const start = Date.now();
+      while (this.isProcessing && Date.now() - start < 3000) {
+        await new Promise(r => setTimeout(r, 100));
+      }
+    }
+
+    // Run final flush (if not already done)
+    if (!this.finalFlushDone) {
+      await this.processBufferedChunks(true);
+    } else {
+      console.log("[Processor] ✅ Final flush already completed");
+    }
+
+    // Ensure we've finished
+    console.log("[Processor] ⏳ Ensuring final processing complete...");
+    const start = Date.now();
+    while (this.isProcessing && Date.now() - start < 3000) {
+      await new Promise(r => setTimeout(r, 100));
+    }
+
+    console.log("[Processor] ✅ Stop finalized");
+    this.isStopping = false;
+    this.isFinalized = true;
+
+    // Clear partial transcript tracking for next session
+    this.recentTranscripts.clear();
+
+    this.callbacks?.onStateChange("idle");
+
+    if (this.stopPromiseResolver) {
+      this.stopPromiseResolver();
+      this.stopPromiseResolver = null;
     }
   }
 
@@ -206,121 +458,53 @@ export class TranscriptionProcessor {
     return hash;
   }
 
+  /**
+   * Clean up old transcript tracking entries
+   */
+  private cleanupOldTranscripts(now: number): void {
+    const expireTime = now - this.STABILITY_WINDOW_MS * 2;
+    for (const [hash, data] of this.recentTranscripts.entries()) {
+      if (data.lastSeen < expireTime) {
+        this.recentTranscripts.delete(hash);
+      }
+    }
+  }
+
   private async sendToWhisperAPI(audioBlob: Blob): Promise<{
     text: string;
     is_valid: boolean;
     reason?: string;
     confidence?: number;
   }> {
-    // Debug: Check blob validity
-    console.log(`[Processor] 🎤 Audio blob details: size=${audioBlob.size} bytes, type="${audioBlob.type}", constructor=${audioBlob.constructor.name}`);
-
-    if (audioBlob.size === 0) {
-      console.error('[Processor] ❌ Empty audio blob!');
-      throw new Error('Empty audio blob');
-    }
+    console.log(`[Processor] 🎤 Sending to API: size=${audioBlob.size} bytes, type=${audioBlob.type}`);
 
     const formData = new FormData();
     formData.append('file', audioBlob, 'audio.webm');
-    formData.append('userId', this.userId);
-    formData.append('userName', this.userName);
-
-    // Debug: Verify formData
-    const fileEntry = formData.get('file');
-    console.log(`[Processor] FormData file entry:`, fileEntry ? 'present' : 'MISSING');
-    if (fileEntry instanceof File) {
-      console.log(`[Processor] File in FormData: name=${fileEntry.name}, size=${fileEntry.size}, type=${fileEntry.type}`);
-    }
-
-    console.log(`[Processor] Sending audio blob: ${audioBlob.size} bytes, type: ${audioBlob.type || 'unknown'}`);
-
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 30000);
 
     try {
       const response = await fetch('/api/whisper', {
         method: 'POST',
         body: formData,
-        signal: controller.signal,
       });
 
-      clearTimeout(timeout);
-
-      console.log(`[Processor] API response status: ${response.status} ${response.statusText}`);
+      const data = await response.json();
 
       if (!response.ok) {
-        let errorBody = '';
-        try {
-          const errData = await response.json();
-          errorBody = JSON.stringify(errData);
-        } catch (e) {
-          errorBody = await response.text();
-        }
-        console.error('[Processor] API error response:', errorBody.substring(0, 300));
-        throw new Error(`HTTP ${response.status}: ${errorBody.substring(0, 100)}`);
+        console.error(`[Processor] ❌ API error ${response.status}:`, data);
+        throw new Error(`HTTP ${response.status}: ${JSON.stringify(data)}`);
       }
 
-      const data = await response.json();
-      console.log('[Processor] API result:', data.is_valid ? '✅' : '❌', data.reason || 'accepted', '| text:', data.text.substring(0, 50));
-
+      console.log(`[Processor] ✅ API response:`, data);
       return {
         text: data.text || '',
-        is_valid: data.is_valid,
+        is_valid: data.is_valid ?? true,
         reason: data.reason,
         confidence: data.confidence,
       };
 
-    } catch (error: any) {
-      clearTimeout(timeout);
-      console.error('[Processor] Fetch error:', error.message, error.name);
-      if (error.name === 'AbortError') {
-        throw new Error('Request timeout after 30s');
-      }
+    } catch (error) {
+      console.error("[Processor] ❌ API failure:", error);
       throw error;
     }
-  }
-
-  stop(): void {
-    if (!this.isRecording) return;
-
-    console.log("[Processor] Stopping...");
-    this.isRecording = false;
-
-    if (this.mediaRecorder && this.mediaRecorder.state !== 'inactive') {
-      try {
-        // Stop will trigger ondataavailable with final chunk
-        this.mediaRecorder.stop();
-      } catch (e) {}
-      this.mediaRecorder = null;
-    }
-
-    // FIX: Process remaining on stop (header + clusters)
-    if (this.headerChunk || this.clusters.length > 0) {
-      console.log(`[Processor] Processing final: header=${!!this.headerChunk}, clusters=${this.clusters.length}`);
-
-      if (this.headerChunk && this.clusters.length >= 1) {
-        // Have header + clusters → merge
-        console.log("[Processor] Merging header + clusters on stop");
-        const allParts = [this.headerChunk, ...this.clusters];
-        const mergedBlob = new Blob(allParts, { type: 'audio/webm' });
-        this.headerChunk = null;
-        this.clusters = [];
-        this.sendToWhisperAPI(mergedBlob).catch(console.error);
-
-      } else if (this.headerChunk && this.headerChunk.size > 30000) {
-        // Only header, but large enough
-        console.log("[Processor] Sending header-only chunk");
-        this.sendToWhisperAPI(this.headerChunk).catch(console.error);
-        this.headerChunk = null;
-      } else {
-        // Too small, skip
-        console.log("[Processor] Final audio too small, skipping");
-        this.headerChunk = null;
-        this.clusters = [];
-      }
-    }
-
-    this.callbacks?.onStateChange("idle");
-    console.log("[Processor] Stopped");
   }
 }

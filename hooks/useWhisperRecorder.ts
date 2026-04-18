@@ -3,6 +3,7 @@
 import { useState, useRef, useCallback, useEffect } from "react";
 import { useCall } from "@stream-io/video-react-sdk";
 import { TranscriptionProcessor } from "../lib/transcription/processor";
+import { VoiceActivityDetector } from "../lib/audio/vad";
 import type { TranscriptionResult } from "@/lib/transcription/config";
 
 export type TranscriptEntry = {
@@ -10,11 +11,12 @@ export type TranscriptEntry = {
   userId: string;
   name: string;
   text: string;
+  translated_text?: string; // English translation (optional)
   timestamp: number;
   updatedAt: number;
-  isFinal?: boolean; // 是否是最终确认的文本
+  isFinal?: boolean;
   confidence?: number;
-  reason?: string; // 如果被拒绝，记录原因
+  reason?: string;
 };
 
 export type RecorderStatus = "idle" | "recording" | "stopping" | "error";
@@ -38,19 +40,10 @@ interface UseWhisperRecorderOptions {
   onVADStateChange?: (isSpeaking: boolean) => void;
 }
 
-/**
- * 增强版 Whisper Recorder Hook
- *
- * 新特性：
- * 1. 滑动窗口转录 - 10-15秒缓冲，每2秒处理
- * 2. 严格幻觉检测 - 过滤YouTube风格短语
- * 3. 文本合并 - 自动去除重叠部分，保持连续
- * 4. 低延迟 - 快速返回部分结果
- * 5. 可选实时翻译
- */
+
 export function useWhisperRecorder({
-  chunkIntervalMs = 2000, // 每2秒处理一次
-  maxBufferSeconds = 15, // 缓冲最大15秒
+  chunkIntervalMs = 2000, // 
+  maxBufferSeconds = 15, // 
   trimToSeconds = 3,
   targetSampleRate = 16000,
   maxTranscripts = 30,
@@ -72,8 +65,10 @@ export function useWhisperRecorder({
 
   // Refs
   const processorRef = useRef<TranscriptionProcessor | null>(null);
+  const vadRef = useRef<VoiceActivityDetector | null>(null);
   const callRef = useRef(call);
   const isRecordingRef = useRef(false);
+  const isVADInitializedRef = useRef(false);
   const lastTranscriptRef = useRef<string>('');
   const lastTranscriptTimeRef = useRef<number>(0);
 
@@ -82,10 +77,12 @@ export function useWhisperRecorder({
   }, [call]);
 
   /**
-   * 启动录音
+   * 启动录音（带 VAD 控制）
+   * - VAD 检测到语音时启动 MediaRecorder
+   * - 静音超时后自动停止 MediaRecorder
    */
   const startRecording = useCallback(async () => {
-    console.log("[useWhisper] === START RECORDING ===");
+    console.log("[useWhisper] === START RECORDING WITH VAD ===");
 
     if (isRecordingRef.current) {
       console.log("[useWhisper] Already recording, ignoring");
@@ -119,23 +116,20 @@ export function useWhisperRecorder({
       audioStream = participant.audioStream;
       console.log("[useWhisper] Got audioStream from participant.audioStream (MediaStream)");
     } else if (participant.audioStream && typeof (participant.audioStream as any)?.getTracks === 'function') {
-      // Có thể là MediaStream-like object
       audioStream = participant.audioStream as unknown as MediaStream;
       console.log("[useWhisper] Got audioStream from participant.audioStream (cast)");
     }
 
-    // Cách 2: Lấy từ audioTracks (nếu tồn tại)
+    // Cách 2: Lấy từ audioTracks
     const audioTracks = (participant as any)?.audioTracks;
     if (!audioStream && audioTracks && typeof audioTracks?.size === 'number' && audioTracks.size > 0) {
       const audioTrackArray = Array.from(audioTracks.values());
       const firstTrack = audioTrackArray[0] as any;
-      console.log("[useWhisper] Audio track:", firstTrack);
 
       if (firstTrack?.mediaStream instanceof MediaStream) {
         audioStream = firstTrack.mediaStream;
         console.log("[useWhisper] Got audioStream from audioTrack.mediaStream");
       } else if (firstTrack?.track instanceof MediaStreamTrack) {
-        // Tạo MediaStream từ MediaStreamTrack
         audioStream = new MediaStream([firstTrack.track]);
         console.log("[useWhisper] Created MediaStream from audioTrack.track");
       }
@@ -148,7 +142,61 @@ export function useWhisperRecorder({
       return;
     }
 
-    // 创建处理器
+    // ── STEP 1: Create and initialize VAD ─────────────────────────────────
+    const vad = new VoiceActivityDetector({
+      volumeThreshold: volumeThreshold,
+      minSpeechDurationMs: minSpeechDurationMs,
+      silenceTimeoutMs: silenceTimeoutMs,
+      useAdaptiveThreshold: useAdaptiveThreshold,
+      noiseFloorWindowMs: noiseFloorWindowMs,
+    });
+
+    if (!vad.initialize(audioStream)) {
+      console.error("[useWhisper] VAD initialization failed");
+      onError?.("Không thể khởi tạo VAD");
+      setStatus("error");
+      return;
+    }
+
+    vadRef.current = vad;
+
+    // VAD event handlers
+    vad.setOnSpeechStart(() => {
+      console.log("[useWhisper] VAD: Speech started");
+
+      // Start MediaRecorder if not already recording
+      if (processorRef.current && !processorRef.current.getIsRecording()) {
+        console.log("[useWhisper] Starting MediaRecorder due to speech");
+        processorRef.current.start(audioStream);
+      }
+
+      // 通知 TranscriptionProcessor：用户开始说话
+      processorRef.current?.setSpeakingState(true);
+
+      onVADStateChange?.(true);
+    });
+
+    vad.setOnSpeechEnd(() => {
+      console.log("[useWhisper] VAD: Speech ended");
+
+      onVADStateChange?.(false);
+
+      // 通知 TranscriptionProcessor：用户停止说话（开始静音）
+      processorRef.current?.setSpeakingState(false);
+
+      // Auto-stop MediaRecorder after silenceTimeoutMs
+      setTimeout(() => {
+        if (processorRef.current && processorRef.current.getIsRecording() && !vad.isCurrentlySpeaking()) {
+          console.log("[useWhisper] Silence timeout reached, stopping MediaRecorder");
+          processorRef.current.stop();
+        }
+      }, silenceTimeoutMs + 200);
+    });
+
+    // Start VAD analysis
+    vad.start();
+
+    // ── STEP 2: Create TranscriptionProcessor ─────────────────────────────
     const processor = new TranscriptionProcessor(
       {
         chunkIntervalMs,
@@ -159,7 +207,7 @@ export function useWhisperRecorder({
       participant.name || "User"
     );
 
-    // 设置回调
+    // Set callbacks
     processor.setCallbacks(
       (result: TranscriptionResult) => {
         console.log("[useWhisper] Transcription received:", result);
@@ -167,26 +215,29 @@ export function useWhisperRecorder({
         const timestamp = Date.now();
         const newText = result.final_display.trim();
 
-        // Avoid empty text
+        // Skip empty text
         if (!newText || newText.length < 2) {
           return;
         }
 
-        // Check duplicate với text trước đó (dùng ref)
+        // Check duplicate EXACT MATCH only (allow prefix extensions for interim)
         if (lastTranscriptRef.current) {
-          // Nếu text mới bắt đầu bằng text cũ → bỏ qua (incremental)
-          if (newText.startsWith(lastTranscriptRef.current)) {
-            console.log("[useWhisper] Duplicate/incremental text, skipping");
+          const lastText = lastTranscriptRef.current;
+
+          // Skip EXACT duplicates
+          if (newText === lastText && !result.is_final) {
+            console.log("[useWhisper] Exact duplicate interim, skipping");
             return;
           }
-          // Nếu text cũ bắt đầu bằng mới → cũ hơn, bỏ qua mới
-          if (lastTranscriptRef.current.startsWith(newText)) {
-            console.log("[useWhisper] Shorter duplicate, skipping");
+
+          // Skip if new is shorter AND prefix of old (truncated interim)
+          if (!result.is_final && newText.length < lastText.length && lastText.startsWith(newText)) {
+            console.log("[useWhisper] Shorter/truncated interim, skipping");
             return;
           }
         }
 
-        // Cập nhật last transcript
+        // Update last transcript
         lastTranscriptRef.current = newText;
         lastTranscriptTimeRef.current = timestamp;
 
@@ -197,17 +248,18 @@ export function useWhisperRecorder({
           text: newText,
           timestamp,
           updatedAt: timestamp,
-          isFinal: result.is_valid,
+          isFinal: result.is_final ?? false,
           confidence: result.confidence,
           reason: result.reason,
         };
 
         setTranscripts((prev) => {
           const next = [...prev, entry];
-          // Giới hạn số lượng
-          return next.slice(-maxTranscripts);
+          const result = next.slice(-maxTranscripts);
+          return result;
         });
 
+        console.log("[useWhisper] Transcript received:", newText, "(final:", result.is_final, ")");
         onTranscript?.(entry);
       },
       (error: string) => {
@@ -215,7 +267,7 @@ export function useWhisperRecorder({
         onError?.(error);
       },
       (state: string) => {
-        console.log("[useWhisper] State change:", state);
+        console.log("[useWhisper] Processor state change:", state);
         if (state === "recording") {
           setStatus("recording");
         } else if (state === "idle") {
@@ -226,20 +278,26 @@ export function useWhisperRecorder({
 
     processorRef.current = processor;
     isRecordingRef.current = true;
+    isVADInitializedRef.current = true;
 
-    // 启动处理器 với audio stream đã lấy được
-    console.log("[useWhisper] Audio stream:", audioStream ? "found" : "not found");
-    processor.start(audioStream);
+    // VAD will automatically start MediaRecorder when speech is detected
+    // No need to call processor.start() here
 
     setStatus("recording");
-    console.log("[useWhisper] Recording started");
+    console.log("[useWhisper] VAD started, waiting for speech...");
   }, [
     chunkIntervalMs,
     maxBufferSeconds,
     targetSampleRate,
     maxTranscripts,
+    volumeThreshold,
+    minSpeechDurationMs,
+    silenceTimeoutMs,
+    useAdaptiveThreshold,
+    noiseFloorWindowMs,
     onTranscript,
     onError,
+    onVADStateChange,
   ]);
 
   /**
@@ -252,14 +310,26 @@ export function useWhisperRecorder({
     isRecordingRef.current = false;
     setStatus("stopping");
 
+    // Stop MediaRecorder processor first
     const processor = processorRef.current;
     if (processor) {
-      processor.stop();
+      console.log("[useWhisper] Stopping processor...");
+      await processor.stop();
       processorRef.current = null;
+      console.log("[useWhisper] Processor stopped");
+    }
+
+    // Stop VAD
+    const vad = vadRef.current;
+    if (vad) {
+      console.log("[useWhisper] Stopping VAD...");
+      vad.stop();
+      vadRef.current = null;
+      console.log("[useWhisper] VAD stopped");
     }
 
     setStatus("idle");
-    console.log("[useWhisper] Recording stopped");
+    console.log("[useWhisper] Recording fully stopped");
   }, []);
 
   /**
@@ -270,8 +340,18 @@ export function useWhisperRecorder({
   // ── Cleanup on unmount (only if recording) ────────────────────────────
   useEffect(() => {
     return () => {
-      if (isRecordingRef.current && processorRef.current) {
-        processorRef.current.stop();
+      if (isRecordingRef.current) {
+        console.log("[useWhisper] Component unmount, stopping everything...");
+
+        // Stop processor
+        if (processorRef.current) {
+          processorRef.current.stop();
+        }
+
+        // Stop VAD
+        if (vadRef.current) {
+          vadRef.current.stop();
+        }
       }
     };
   }, []);

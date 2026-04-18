@@ -7,6 +7,7 @@ export interface TranscriptionResult {
   is_valid: boolean;
   confidence?: number;
   reason?: string;
+  is_final?: boolean; // true = final/confirmed, false = partial/interim
 }
 
 export interface TranscriptionProcessorOptions {
