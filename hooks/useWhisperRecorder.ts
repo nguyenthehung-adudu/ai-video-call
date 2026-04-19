@@ -6,6 +6,8 @@ import { TranscriptionProcessor } from "../lib/transcription/processor";
 import { VoiceActivityDetector } from "../lib/audio/vad";
 import type { TranscriptionResult } from "@/lib/transcription/config";
 
+const SETTINGS_KEY = 'ai-meeting-settings';
+
 export type TranscriptEntry = {
   id: string;
   userId: string;
@@ -35,6 +37,8 @@ interface UseWhisperRecorderOptions {
   /** 启用翻译 */
   enableTranslation?: boolean;
   targetLanguage?: string; // e.g. 'en', 'zh', 'ja'
+  sourceLanguage?: string; // Ngôn ngữ nguồn, e.g. 'vi', 'en'
+  translateService?: 'mymemory' | 'openai' | 'deepl';
   onTranscript?: (entry: TranscriptEntry) => void;
   onError?: (error: string) => void;
   onVADStateChange?: (isSpeaking: boolean) => void;
@@ -42,18 +46,20 @@ interface UseWhisperRecorderOptions {
 
 
 export function useWhisperRecorder({
-  chunkIntervalMs = 2000, // 
-  maxBufferSeconds = 15, // 
+  chunkIntervalMs: chunkIntervalMsProp,
+  maxBufferSeconds: maxBufferSecondsProp,
   trimToSeconds = 3,
   targetSampleRate = 16000,
   maxTranscripts = 30,
-  volumeThreshold = 0.035,
-  minSpeechDurationMs = 300,
-  silenceTimeoutMs = 1200,
+  volumeThreshold: volumeThresholdProp,
+  minSpeechDurationMs: minSpeechDurationMsProp,
+  silenceTimeoutMs: silenceTimeoutMsProp,
   useAdaptiveThreshold = true,
   noiseFloorWindowMs = 100,
-  enableTranslation = false,
-  targetLanguage = "en",
+  enableTranslation: enableTranslationProp,
+  targetLanguage: targetLanguageProp,
+  sourceLanguage: sourceLanguageProp,
+  translateService: translateServiceProp,
   onTranscript,
   onError,
   onVADStateChange,
@@ -62,6 +68,53 @@ export function useWhisperRecorder({
 
   const [status, setStatus] = useState<RecorderStatus>("idle");
   const [transcripts, setTranscripts] = useState<TranscriptEntry[]>([]);
+
+  // Settings sẽ được đọc trực tiếp từ localStorage khi cần
+  const getSettings = useCallback((): {
+    enableTranslation: boolean;
+    targetLanguage: string;
+    sourceLanguage?: string; // Ngôn ngữ nguồn
+    translateService?: 'mymemory' | 'openai' | 'deepl';
+    showOriginal?: boolean;
+    chunkIntervalMs: number;
+    maxBufferSeconds: number;
+    volumeThreshold: number;
+    minSpeechDurationMs: number;
+    silenceTimeoutMs: number;
+  } => {
+    const saved = localStorage.getItem(SETTINGS_KEY);
+    if (saved) {
+      try {
+        const parsed = JSON.parse(saved);
+        return {
+          enableTranslation: parsed.enableTranslation ?? false,
+          targetLanguage: parsed.targetLanguage ?? 'en',
+          sourceLanguage: parsed.sourceLanguage, // Dùng sourceLanguage
+          translateService: parsed.translateService ?? 'mymemory',
+          showOriginal: parsed.showOriginal ?? true,
+          chunkIntervalMs: parsed.chunkIntervalMs ?? 2000,
+          maxBufferSeconds: parsed.maxBufferSeconds ?? 15,
+          volumeThreshold: parsed.volumeThreshold ?? 0.035,
+          minSpeechDurationMs: parsed.minSpeechDurationMs ?? 300,
+          silenceTimeoutMs: parsed.silenceTimeoutMs ?? 1200,
+        };
+      } catch (e) {
+        console.error('Failed to parse settings:', e);
+      }
+    }
+    return {
+      enableTranslation: false,
+      targetLanguage: 'en',
+      sourceLanguage: 'en', // Default English
+      translateService: 'mymemory',
+      showOriginal: true,
+      chunkIntervalMs: 2000,
+      maxBufferSeconds: 15,
+      volumeThreshold: 0.035,
+      minSpeechDurationMs: 300,
+      silenceTimeoutMs: 1200,
+    };
+  }, []);
 
   // Refs
   const processorRef = useRef<TranscriptionProcessor | null>(null);
@@ -83,6 +136,7 @@ export function useWhisperRecorder({
    */
   const startRecording = useCallback(async () => {
     console.log("[useWhisper] === START RECORDING WITH VAD ===");
+    console.log("[useWhisper] startRecording called - checking conditions..."); // DEBUG
 
     if (isRecordingRef.current) {
       console.log("[useWhisper] Already recording, ignoring");
@@ -106,6 +160,46 @@ export function useWhisperRecorder({
     console.log("[useWhisper] Participant:", {
       userId: participant.userId,
       name: participant.name,
+    });
+
+    // Đọc settings mới nhất từ localStorage
+    const saved = localStorage.getItem(SETTINGS_KEY);
+    console.log("[useWhisper] localStorage saved:", saved); // DEBUG
+    let freshEnableTranslation = false;
+    let freshTargetLanguage = 'en';
+    let freshSourceLanguage = 'en';
+    let freshTranslateService: 'mymemory' | 'openai' | 'deepl' = 'mymemory';
+    let freshChunkIntervalMs = 2000;
+    let freshMaxBufferSeconds = 15;
+    let freshVolumeThreshold = 0.035;
+    let freshMinSpeechDurationMs = 300;
+    let freshSilenceTimeoutMs = 1200;
+
+    if (saved) {
+      try {
+        const parsed = JSON.parse(saved);
+        freshEnableTranslation = parsed.enableTranslation ?? true;  // Default TRUE
+        freshTargetLanguage = parsed.targetLanguage ?? 'en';
+        freshSourceLanguage = parsed.sourceLanguage ?? 'en';
+        freshTranslateService = parsed.translateService ?? 'mymemory';
+        freshChunkIntervalMs = parsed.chunkIntervalMs ?? 2000;
+        freshMaxBufferSeconds = parsed.maxBufferSeconds ?? 15;
+        freshVolumeThreshold = parsed.volumeThreshold ?? 0.035;
+        freshMinSpeechDurationMs = parsed.minSpeechDurationMs ?? 300;
+        freshSilenceTimeoutMs = parsed.silenceTimeoutMs ?? 1200;
+      } catch (e) {
+        console.error('Failed to parse settings:', e);
+      }
+    } else {
+      // Nếu chưa có settings, dùng default với enableTranslation = true
+      freshEnableTranslation = true;
+    }
+
+    console.log("[useWhisper] Fresh settings:", {
+      enableTranslation: freshEnableTranslation,
+      targetLanguage: freshTargetLanguage,
+      sourceLanguage: freshSourceLanguage,
+      translateService: freshTranslateService,
     });
 
     // Lấy audio stream từ participant
@@ -144,11 +238,11 @@ export function useWhisperRecorder({
 
     // ── STEP 1: Create and initialize VAD ─────────────────────────────────
     const vad = new VoiceActivityDetector({
-      volumeThreshold: volumeThreshold,
-      minSpeechDurationMs: minSpeechDurationMs,
-      silenceTimeoutMs: silenceTimeoutMs,
-      useAdaptiveThreshold: useAdaptiveThreshold,
-      noiseFloorWindowMs: noiseFloorWindowMs,
+      volumeThreshold: freshVolumeThreshold,
+      minSpeechDurationMs: freshMinSpeechDurationMs,
+      silenceTimeoutMs: freshSilenceTimeoutMs,
+      useAdaptiveThreshold: false, // Default
+      noiseFloorWindowMs: 300,     // Default
     });
 
     if (!vad.initialize(audioStream)) {
@@ -199,9 +293,13 @@ export function useWhisperRecorder({
     // ── STEP 2: Create TranscriptionProcessor ─────────────────────────────
     const processor = new TranscriptionProcessor(
       {
-        chunkIntervalMs,
-        maxBufferSeconds,
+        chunkIntervalMs: chunkIntervalMsProp ?? freshChunkIntervalMs,
+        maxBufferSeconds: maxBufferSecondsProp ?? freshMaxBufferSeconds,
         sampleRate: targetSampleRate,
+        sourceLanguage: sourceLanguageProp ?? freshSourceLanguage, // Ưu tiên props, fallback localStorage
+        enableTranslation: enableTranslationProp ?? freshEnableTranslation,
+        targetLanguage: targetLanguageProp ?? freshTargetLanguage,
+        translateService: translateServiceProp ?? freshTranslateService,
       },
       participant.userId,
       participant.name || "User"
@@ -246,6 +344,7 @@ export function useWhisperRecorder({
           userId: participant.userId,
           name: participant.name || "User",
           text: newText,
+          translated_text: result.translated_text,
           timestamp,
           updatedAt: timestamp,
           isFinal: result.is_final ?? false,
@@ -286,18 +385,19 @@ export function useWhisperRecorder({
     setStatus("recording");
     console.log("[useWhisper] VAD started, waiting for speech...");
   }, [
-    chunkIntervalMs,
-    maxBufferSeconds,
+    chunkIntervalMsProp,
+    maxBufferSecondsProp,
     targetSampleRate,
     maxTranscripts,
-    volumeThreshold,
-    minSpeechDurationMs,
-    silenceTimeoutMs,
+    volumeThresholdProp,
+    minSpeechDurationMsProp,
+    silenceTimeoutMsProp,
     useAdaptiveThreshold,
     noiseFloorWindowMs,
     onTranscript,
     onError,
     onVADStateChange,
+    getSettings,
   ]);
 
   /**

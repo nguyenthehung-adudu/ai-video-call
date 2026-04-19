@@ -11,9 +11,10 @@ interface SubtitlePanelProps {
   transcripts: TranscriptEntry[];
   onClose?: () => void;
   className?: string;
+  showOriginal?: boolean; // true: hiển thị cả gốc và dịch, false: chỉ hiển thị dịch
 }
 
-const SubtitlePanel: React.FC<SubtitlePanelProps> = ({ transcripts, onClose, className }) => {
+const SubtitlePanel: React.FC<SubtitlePanelProps> = ({ transcripts, onClose, className, showOriginal = true }) => {
   const panelRef = useRef<HTMLDivElement>(null);
   const prevLengthRef = useRef(0);
   const isInitialMount = useRef(true);
@@ -77,7 +78,7 @@ const SubtitlePanel: React.FC<SubtitlePanelProps> = ({ transcripts, onClose, cla
     <div
       ref={panelRef}
       className={cn(
-        "fixed left-0 top-0 h-full w-[380px] z-50 border-r border-dark-3",
+        "fixed left-0 top-0 h-[calc(100vh-120px)] w-[380px] z-[150] border-r border-dark-3",
         "flex flex-col bg-dark-1",
         className
       )}
@@ -139,23 +140,32 @@ const SubtitlePanel: React.FC<SubtitlePanelProps> = ({ transcripts, onClose, cla
                   {/* Latest transcript - prominent (bilingual) */}
                   {latestEntry && (
                     <div className="pl-10">
-                      {/* Vietnamese (primary) */}
-                      <p className={cn(
-                        "text-white font-medium text-sm leading-relaxed",
-                        !latestEntry.isFinal && "opacity-70 italic" // Partial: slightly faded
-                      )}>
-                        {latestEntry.text}
-                        {!latestEntry.isFinal && (
-                          <span className="inline-block ml-2 text-xs text-blue-400 font-normal">
-                            (đang nhận diện...)
-                          </span>
-                        )}
-                      </p>
+                      {/* Vietnamese (primary) - only if showOriginal is true */}
+                      {showOriginal && (
+                        <p className={cn(
+                          "text-white font-medium text-sm leading-relaxed",
+                          !latestEntry.isFinal && "opacity-70 italic" // Partial: slightly faded
+                        )}>
+                          {latestEntry.text}
+                          {!latestEntry.isFinal && (
+                            <span className="inline-block ml-2 text-xs text-blue-400 font-normal">
+                              (đang nhận diện...)
+                            </span>
+                          )}
+                        </p>
+                      )}
 
                       {/* English translation (secondary, if available) */}
                       {latestEntry.translated_text && (
                         <p className="text-white/60 text-xs italic leading-relaxed mt-1">
                           {latestEntry.translated_text}
+                        </p>
+                      )}
+
+                      {/* If translation not ready yet and showOriginal is false, show placeholder */}
+                      {!latestEntry.translated_text && !showOriginal && latestEntry.isFinal && (
+                        <p className="text-white/40 text-xs italic">
+                          Đang dịch...
                         </p>
                       )}
 
@@ -174,10 +184,12 @@ const SubtitlePanel: React.FC<SubtitlePanelProps> = ({ transcripts, onClose, cla
                         <div key={entry.id} className="text-white/60 text-xs">
                           <span className="text-white/40">{formatTime(entry.timestamp)}</span>
                           <div className="mt-0.5">
-                            <span className={cn(!entry.isFinal && "italic opacity-70")}>
-                              {entry.text}
-                            </span>
-                            {!entry.isFinal && (
+                            {showOriginal && (
+                              <span className={cn(!entry.isFinal && "italic opacity-70")}>
+                                {entry.text}
+                              </span>
+                            )}
+                            {!entry.isFinal && showOriginal && (
                               <span className="text-blue-400 text-[10px] ml-1">(partial)</span>
                             )}
                             {entry.translated_text && (

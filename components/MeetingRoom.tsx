@@ -160,7 +160,24 @@ const MeetingRoom = ({ meetingId }: { meetingId: string }) => {
   }, []);
 
   const handleCopyLink = useCallback(() => {
-    navigator.clipboard.writeText(window.location.href);
+    console.log("=== handleCopyLink CALLED ===");
+    navigator.clipboard.writeText(window.location.href).then(() => {
+      console.log("✅ Link copied to clipboard:", window.location.href);
+      setInviteStatus({
+        show: true,
+        success: true,
+        message: 'Đã sao chép liên kết phòng!'
+      });
+      setTimeout(() => setInviteStatus((s) => ({ ...s, show: false })), 3000);
+    }).catch((err) => {
+      console.error("❌ Clipboard error:", err);
+      setInviteStatus({
+        show: true,
+        success: false,
+        message: 'Sao chép thất bại: ' + err.message
+      });
+      setTimeout(() => setInviteStatus((s) => ({ ...s, show: false })), 3000);
+    });
   }, []);
 
   const handleInviteEmail = useCallback(async () => {
@@ -244,8 +261,8 @@ const MeetingRoom = ({ meetingId }: { meetingId: string }) => {
         </div>
 
         {/* ── Controls ────────────────────────────────────────── */}
-        <div className="fixed bottom-0 left-0 w-full flex justify-center z-[60]">
-          <div className="flex items-center gap-5 flex-wrap">
+        <div className="fixed bottom-0 left-0 w-full flex justify-center z-[99] pointer-events-auto">
+          <div className="flex items-center gap-5 flex-wrap py-3">
             <CallControls />
 
             {/* Layout */}
@@ -339,9 +356,9 @@ const MeetingRoom = ({ meetingId }: { meetingId: string }) => {
 
       {/* ── Multi-User Subtitle Panel ───────────────────────────────── */}
       {showSubtitles && (
-        <MemoizedSubtitlePanel 
-          transcripts={allTranscripts} 
-          onClose={handleCloseSubtitles} 
+        <MemoizedSubtitlePanel
+          transcripts={allTranscripts}
+          onClose={handleCloseSubtitles}
         />
       )}
 
@@ -356,7 +373,7 @@ const MeetingRoom = ({ meetingId }: { meetingId: string }) => {
       {/* ── Chat panel ───────────────────────────────────────── */}
       <div
         className={cn(
-          "fixed right-0 top-0 h-full w-[380px] z-[80] border-l border-dark-3 transition-transform duration-300",
+          "fixed right-0 top-0 bottom-24 w-[380px] z-[200] border-l border-dark-3 transition-transform duration-300",
           showChat ? "translate-x-0" : "translate-x-full",
         )}
       >
@@ -368,7 +385,7 @@ const MeetingRoom = ({ meetingId }: { meetingId: string }) => {
 
       {/* ── Invite Modal ────────────────────────────────────── */}
       {showInvite && (
-        <div className="fixed inset-0 bg-black/60 z-50 flex items-center justify-center p-4">
+        <div className="fixed inset-0 bg-black/60 z-[300] flex items-center justify-center p-4">
           <div className="bg-dark-1 rounded-xl p-6 w-full max-w-md border border-dark-3">
             <h3 className="text-lg font-semibold text-white mb-4">Mời người tham gia</h3>
 
@@ -407,7 +424,7 @@ const MeetingRoom = ({ meetingId }: { meetingId: string }) => {
       {inviteStatus.show && (
         <div
           className={cn(
-            "fixed top-4 left-1/2 -translate-x-1/2 z-[100] px-6 py-3 rounded-lg shadow-xl flex items-center gap-3 animate-in slide-in-from-top",
+            "fixed top-4 left-1/2 -translate-x-1/2 z-[250] px-6 py-3 rounded-lg shadow-xl flex items-center gap-3 animate-in slide-in-from-top",
             inviteStatus.success
               ? "bg-green-600 text-white"
               : "bg-red-600 text-white"
@@ -428,7 +445,7 @@ const MeetingRoom = ({ meetingId }: { meetingId: string }) => {
 
       {/* ── Mic Warning Toast ─────────────────────────────────────── */}
       {micWarning && (
-        <div className="fixed top-4 left-1/2 -translate-x-1/2 z-[100] px-6 py-3 rounded-lg shadow-xl bg-yellow-600 text-white flex items-center gap-3 animate-in slide-in-from-top">
+        <div className="fixed top-4 left-1/2 -translate-x-1/2 z-[250] px-6 py-3 rounded-lg shadow-xl bg-yellow-600 text-white flex items-center gap-3 animate-in slide-in-from-top">
           <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
           </svg>

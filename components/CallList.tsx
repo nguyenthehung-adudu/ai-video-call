@@ -27,22 +27,6 @@ type RecordingWithCall = {
   recording: CallRecording;
 };
 
-/** Build participant avatar list for a call type. */
-async function fetchCallAvatars(call: Call) {
-  try {
-    const { members } = await call.queryMembers({ limit: 12 });
-    if (members.length > 0) {
-      return members.map((m) => ({
-        src: memberAvatarUrl(m.user?.image, m.user?.name || m.user_id),
-        alt: m.user?.name || m.user_id,
-      }));
-    }
-  } catch {
-    // silent
-  }
-  return [];
-}
-
 /** Extract creator info from call state. */
 function getCreatorInfo(call: Call): ParticipantAvatar | null {
   const creatorId = call.state.createdBy?.id;
@@ -145,6 +129,7 @@ const CallList = ({ type }: { type: 'ended' | 'upcoming' | 'recordings' }) => {
   );
 
   useEffect(() => {
+    console.log('📞 [AvatarsEffect] type:', type, 'targetCalls.length:', targetCalls.length, 'calls:', targetCalls.map(c => c.id));
     if (type === 'recordings' || targetCalls.length === 0) {
       setMemberAvatars({});
       return;
@@ -156,13 +141,30 @@ const CallList = ({ type }: { type: 'ended' | 'upcoming' | 'recordings' }) => {
     const load = async () => {
       const result: Record<string, ParticipantAvatar[]> = {};
 
+      // For ended calls, always use queryMembers to get full member info with images
+      // For upcoming calls, queryMembers also works
       await Promise.all(
         targetCalls.map(async (call) => {
           if (cancelled) return;
-          const avatars = await fetchCallAvatars(call);
-          if (cancelled) return;
-          if (avatars.length > 0) {
-            result[call.id] = avatars;
+
+          try {
+            const { members } = await call.queryMembers({ limit: 12 });
+            console.log('📞 [Avatars] queryMembers for call:', call.id, 'got', members.length, 'members');
+            members.forEach((m, i) => {
+              console.log(`  [${i}] user_id: ${m.user_id}, name: ${m.user?.name}, image: ${m.user?.image}`);
+            });
+            if (members.length > 0) {
+              const avatars = members.map((m) => ({
+                src: memberAvatarUrl(m.user?.image, m.user?.name || m.user_id),
+                alt: m.user?.name || m.user_id,
+              }));
+              avatars.forEach((a, i) => {
+                console.log(`  Avatar[${i}]:`, a.src.substring(0, 80));
+              });
+              result[call.id] = avatars;
+            }
+          } catch (error) {
+            console.error('❌ [Avatars] queryMembers failed:', error);
           }
         }),
       );
@@ -239,7 +241,7 @@ const CallList = ({ type }: { type: 'ended' | 'upcoming' | 'recordings' }) => {
 
   /**
    * Resolve avatars for a call.
-   * Ended: members who participated (from queryMembers)
+   * Ended: members who actually participated (from call.state.members or queryMembers)
    * Upcoming: creator + Dicebear avatars for each invited email
    */
   const resolveAvatars = (call: Call): ParticipantAvatar[] => {
@@ -272,10 +274,14 @@ const CallList = ({ type }: { type: 'ended' | 'upcoming' | 'recordings' }) => {
       return [];
     }
 
-    // Ended: show members who participated
+    // Ended: show members who actually participated
     if (type === 'ended') {
-      if (fromMembers && fromMembers.length > 0) return fromMembers;
-      // If no members participated, return empty array (no avatars shown)
+      console.log('📞 [ResolveEnded] Call:', call.id, 'fromMembers length:', fromMembers?.length, 'data:', fromMembers);
+      if (fromMembers && fromMembers.length > 0) {
+        console.log('  ✅ Returning memberAvatars:', fromMembers.map(a => a.alt));
+        return fromMembers;
+      }
+      console.log('  ⚠️ memberAvatars is empty, returning []');
       return [];
     }
 
@@ -311,7 +317,7 @@ const CallList = ({ type }: { type: 'ended' | 'upcoming' | 'recordings' }) => {
               isPreviousMeeting={type === 'ended'}
               participantAvatars={resolveAvatars(meeting)}
               invitedBadge={type === 'upcoming' ? showInvitedBadge(meeting) : false}
-              showDelete={type === 'upcoming'}
+              showDelete={type === 'upcoming' || type === 'ended'}
               onDelete={() => handleRequestDelete(meeting.id, meetingTitle(meeting))}
               link={`${process.env.NEXT_PUBLIC_BASE_URL}/meeting/${meeting.id}`}
               buttonText="Start"

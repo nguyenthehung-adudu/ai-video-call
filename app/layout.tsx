@@ -1,6 +1,6 @@
 import { ReactNode } from "react";
 import type { Metadata } from "next";
-import { ClerkProvider, SignedIn, SignedOut, SignIn } from "@clerk/nextjs";
+import { ClerkProvider } from "@clerk/nextjs";
 import { Inter } from "next/font/google";
 
 import "@stream-io/video-react-sdk/dist/css/styles.css";
@@ -8,10 +8,7 @@ import "stream-chat-react/dist/css/v2/index.css";
 import "./globals.css";
 
 import { Toaster } from "@/components/ui/toaster";
-
-// ✅ PROVIDERS
-import ChatProvider from "@/providers/ChatProvider";
-import StreamVideoProvider from "@/providers/StreamVideoProvider";
+import AuthWrapper from "@/components/AuthWrapper";
 
 const inter = Inter({ subsets: ["latin"] });
 
@@ -47,23 +44,7 @@ export default function RootLayout({
       >
         <body className={`${inter.className} bg-dark-2`}>
           <Toaster />
-
-          {/* ✅ CHỈ LOAD APP KHI ĐÃ LOGIN */}
-          <SignedIn>
-            <ChatProvider>
-              <StreamVideoProvider>
-                {children}
-              </StreamVideoProvider>
-            </ChatProvider>
-          </SignedIn>
-
-          {/* ❌ CHƯA LOGIN → HIỆN LOGIN */}
-          <SignedOut>
-            <div className="flex h-screen w-full items-center justify-center bg-dark-2">
-              <SignIn />
-            </div>
-          </SignedOut>
-
+          <AuthWrapper>{children}</AuthWrapper>
         </body>
       </ClerkProvider>
     </html>

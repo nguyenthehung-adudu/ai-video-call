@@ -34,6 +34,9 @@ export class TranscriptionProcessor {
   private recentTranscripts: Map<number, { text: string; count: number; lastSeen: number }> = new Map();
   private readonly STABILITY_WINDOW_MS = 1000;
 
+  // Translation cache
+  private translationCache: Map<string, string> = new Map();
+
   /**
    * 检查是否正在录音
    */
@@ -268,7 +271,7 @@ export class TranscriptionProcessor {
 
       const result = await this.sendToWhisperAPI(mergedBlob);
 
-      if (result && result.text && result.is_valid) {
+      if (result?.is_valid && result.text) {
         const text = result.text.trim();
 
         if (text.length < 2) {
@@ -309,6 +312,14 @@ export class TranscriptionProcessor {
         this.lastHash = hash;
         this.consecutiveEmpty = 0;
 
+        // ── TRANSLATION ─────────────────────────────────────────────────────
+        let translated_text: string | undefined;
+
+        if (this.options.enableTranslation && this.options.targetLanguage && is_final) {
+          // Chỉ dịch khi kết quả final (tránh dịch nhiều lần)
+          translated_text = await this.translateText(text, this.options.targetLanguage, this.options.sourceLanguage);
+        }
+
         console.log(`[Send] ✅ ${is_final ? 'FINAL' : 'PARTIAL'}: "${text.substring(0, 60)}..."`);
 
         this.callbacks?.onTranscript({
@@ -317,6 +328,7 @@ export class TranscriptionProcessor {
           confidence: result.confidence || 0.85,
           reason: result.reason,
           is_final: is_final,
+          translated_text: translated_text || undefined,
         });
       } else {
         this.consecutiveEmpty++;
@@ -456,6 +468,75 @@ export class TranscriptionProcessor {
       hash = (hash * 31 + text.charCodeAt(i)) & 0xFFFFFF;
     }
     return hash;
+  }
+
+  /**
+   * Dịch văn bản sang ngôn ngữ đích
+   */
+  private async translateText(text: string, targetLanguage: string, sourceLanguage?: string): Promise<string | undefined> {
+    const srcLang = sourceLanguage || this.options.sourceLanguage || 'vi';
+    const translateService = this.options.translateService || 'mymemory';
+
+    // Nếu ngôn ngữ nguồn và đích giống nhau, trả về text gốc
+    if (srcLang === targetLanguage) {
+      console.log(`[Translate] ℹ️ Source and target languages are the same (${srcLang}), skipping translation`);
+      return text;
+    }
+
+    const cacheKey = `${text}_${srcLang}_${targetLanguage}_${translateService}`;
+
+    // Kiểm tra cache trước
+    if (this.translationCache.has(cacheKey)) {
+      console.log('[Translate] ✅ Cache hit');
+      return this.translationCache.get(cacheKey);
+    }
+
+    try {
+      console.log(`[Translate] 🌐 Translating from ${srcLang} to ${targetLanguage} using ${translateService}...`);
+
+      const response = await fetch('/api/translate', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          text,
+          sourceLang: srcLang,
+          targetLang: targetLanguage,
+          service: translateService,
+        }),
+      });
+
+      if (!response.ok) {
+        console.error('[Translate] ❌ API error:', response.status);
+        return undefined;
+      }
+
+      const data = await response.json();
+
+      if (data.success && data.translated_text) {
+        // Cache kết quả
+        this.translationCache.set(cacheKey, data.translated_text as string);
+
+        // Giới hạn cache size (giữ 100 mục gần nhất)
+        if (this.translationCache.size > 100) {
+          const firstKey = this.translationCache.keys().next().value;
+          if (firstKey !== undefined) {
+            this.translationCache.delete(firstKey);
+          }
+        }
+
+        console.log('[Translate] ✅ Translation completed');
+        return data.translated_text;
+      } else {
+        console.warn('[Translate] ⚠️ Translation failed:', data);
+        return undefined;
+      }
+
+    } catch (error) {
+      console.error('[Translate] ❌ Error:', error);
+      return undefined;
+    }
   }
 
   /**
