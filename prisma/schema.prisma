@@ -16,6 +16,7 @@ model Invitation {
   meetingName  String
   hostId       String
   hostName     String
+  hostAvatar   String?
   inviteeEmail String
   type        String    @default("scheduled")
   scheduledAt DateTime?
@@ -24,4 +25,5 @@ model Invitation {
 
   @@index([inviteeEmail])
   @@index([isRead])
+  @@index([meetingId])
 }

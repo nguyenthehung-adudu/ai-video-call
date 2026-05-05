@@ -10,6 +10,7 @@ import { formatMeetingDateTime } from '@/lib/utils';
 import { memberAvatarUrl, dicebearInitials } from '@/lib/participant-avatar';
 import { isEmailInvited } from '@/lib/invite';
 import { useUser } from '@clerk/nextjs';
+import { getInvitationsByMeetingId } from '@/actions/meeting-invitations.actions';
 import { Trash2, AlertTriangle } from 'lucide-react';
 import {
   AlertDialog,
@@ -27,25 +28,13 @@ type RecordingWithCall = {
   recording: CallRecording;
 };
 
-/** Extract creator info from call state. */
-function getCreatorInfo(call: Call): ParticipantAvatar | null {
-  const creatorId = call.state.createdBy?.id;
-  const creatorName = call.state.createdBy?.name;
-  const creatorImage = call.state.createdBy?.image;
-  if (!creatorId) return null;
-  return {
-    src: memberAvatarUrl(creatorImage, creatorName || creatorId),
-    alt: creatorName || creatorId,
-  };
-}
-
-/** Build Dicebear avatar using full meeting title. */
-function getTitleFallbackAvatar(call: Call): ParticipantAvatar {
-  const title = call.state.custom?.description as string | undefined;
-  const displayTitle = title?.trim() || `Meeting ${call.id.slice(0, 8)}`;
-  // Use full title as seed for Dicebear
-  return { src: dicebearInitials(displayTitle), alt: displayTitle };
-}
+type ClerkUserProfile = {
+  userId: string;
+  imageUrl: string | null;
+  firstName: string | null;
+  lastName: string | null;
+  emailAddress: string;
+};
 
 const CallList = ({ type }: { type: 'ended' | 'upcoming' | 'recordings' }) => {
   const router = useRouter();
@@ -55,6 +44,8 @@ const CallList = ({ type }: { type: 'ended' | 'upcoming' | 'recordings' }) => {
   const [recordingsWithCall, setRecordingsWithCall] = useState<RecordingWithCall[]>([]);
   // callId → avatars from Stream members
   const [memberAvatars, setMemberAvatars] = useState<Record<string, ParticipantAvatar[]>>({});
+  // callId → avatars from Prisma invitations (invited users)
+  const [invitedAvatars, setInvitedAvatars] = useState<Record<string, ParticipantAvatar[]>>({});
   const [isAvatarsLoading, setIsAvatarsLoading] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState<{
     open: boolean;
@@ -128,10 +119,11 @@ const CallList = ({ type }: { type: 'ended' | 'upcoming' | 'recordings' }) => {
     [targetCalls],
   );
 
+  // ── Fetch member avatars from Stream + invitations from Prisma ──────────────────
   useEffect(() => {
-    console.log('📞 [AvatarsEffect] type:', type, 'targetCalls.length:', targetCalls.length, 'calls:', targetCalls.map(c => c.id));
     if (type === 'recordings' || targetCalls.length === 0) {
       setMemberAvatars({});
+      setInvitedAvatars({});
       return;
     }
 
@@ -139,38 +131,130 @@ const CallList = ({ type }: { type: 'ended' | 'upcoming' | 'recordings' }) => {
     setIsAvatarsLoading(true);
 
     const load = async () => {
-      const result: Record<string, ParticipantAvatar[]> = {};
+      const memberResult: Record<string, ParticipantAvatar[]> = {};
+      const invitedResult: Record<string, ParticipantAvatar[]> = {};
 
-      // For ended calls, always use queryMembers to get full member info with images
-      // For upcoming calls, queryMembers also works
-      await Promise.all(
-        targetCalls.map(async (call) => {
-          if (cancelled) return;
+      // Process calls in batches of 3 with delay between batches to avoid rate limiting
+      const BATCH_SIZE = 3;
+      const BATCH_DELAY_MS = 500;
 
-          try {
-            const { members } = await call.queryMembers({ limit: 12 });
-            console.log('📞 [Avatars] queryMembers for call:', call.id, 'got', members.length, 'members');
-            members.forEach((m, i) => {
-              console.log(`  [${i}] user_id: ${m.user_id}, name: ${m.user?.name}, image: ${m.user?.image}`);
-            });
-            if (members.length > 0) {
-              const avatars = members.map((m) => ({
-                src: memberAvatarUrl(m.user?.image, m.user?.name || m.user_id),
-                alt: m.user?.name || m.user_id,
-              }));
-              avatars.forEach((a, i) => {
-                console.log(`  Avatar[${i}]:`, a.src.substring(0, 80));
-              });
-              result[call.id] = avatars;
+      for (let batchStart = 0; batchStart < targetCalls.length && !cancelled; batchStart += BATCH_SIZE) {
+        const batch = targetCalls.slice(batchStart, batchStart + BATCH_SIZE);
+
+        await Promise.all(
+          batch.map(async (call) => {
+            if (cancelled) return;
+
+            // 1. Fetch invitations from Prisma first (source of truth for host info + invited users)
+            try {
+              const invResult = await getInvitationsByMeetingId(call.id);
+              if (invResult.success && invResult.invitations.length > 0) {
+                // Collect all unique invitee emails for batch Clerk lookup
+                const inviteeEmails = invResult.invitations
+                  .map((inv) => inv.inviteeEmail)
+                  .filter((email): email is string => !!email);
+
+                // Batch fetch Clerk user profiles via API
+                let clerkUsersMap: Record<string, ClerkUserProfile> = {};
+                if (inviteeEmails.length > 0) {
+                  try {
+                    const response = await fetch(
+                      `/api/clerk-users?emails=${encodeURIComponent(inviteeEmails.join(','))}`
+                    );
+                    if (response.ok) {
+                      const data = await response.json();
+                      if (data.success) {
+                        clerkUsersMap = data.users;
+                      }
+                    }
+                  } catch (fetchError) {
+                    console.error('❌ [Clerk API] Failed to fetch user profiles:', fetchError);
+                  }
+                }
+
+                const avatars: ParticipantAvatar[] = [];
+
+                // First invitation has host info
+                const firstInv = invResult.invitations[0];
+                if (firstInv.hostName) {
+                  avatars.push({
+                    src: memberAvatarUrl(firstInv.hostAvatar || null, firstInv.hostName),
+                    alt: firstInv.hostName,
+                  });
+                }
+
+                // Add invited users with real Clerk avatars or Dicebear initials fallback
+                for (const inv of invResult.invitations) {
+                  if (inv.inviteeEmail) {
+                    const normalizedEmail = inv.inviteeEmail.toLowerCase();
+                    const clerkUser = clerkUsersMap[normalizedEmail];
+
+                    let avatarSrc: string;
+                    let avatarAlt: string;
+
+                    if (clerkUser) {
+                      // Use Clerk imageUrl if available, otherwise generate initials
+                      avatarSrc = memberAvatarUrl(
+                        clerkUser.imageUrl || null,
+                        clerkUser.firstName || clerkUser.lastName || inv.inviteeEmail
+                      );
+                      avatarAlt = [clerkUser.firstName, clerkUser.lastName]
+                        .filter(Boolean)
+                        .join(' ') || inv.inviteeEmail;
+                    } else {
+                      // Fallback to Dicebear initials if user not found in Clerk
+                      avatarSrc = dicebearInitials(inv.inviteeEmail);
+                      avatarAlt = inv.inviteeEmail;
+                    }
+
+                    avatars.push({
+                      src: avatarSrc,
+                      alt: avatarAlt,
+                    });
+                  }
+                }
+
+                // Deduplicate by alt
+                const seen = new Set<string>();
+                const unique = avatars.filter((a) => {
+                  if (seen.has(a.alt)) return false;
+                  seen.add(a.alt);
+                  return true;
+                });
+
+                invitedResult[call.id] = unique;
+              }
+            } catch (error) {
+              console.error('❌ [Invitations] Failed:', error);
             }
-          } catch (error) {
-            console.error('❌ [Avatars] queryMembers failed:', error);
-          }
-        }),
-      );
+
+            // 2. Only query Stream members if no invitations found
+            if (!invitedResult[call.id] || invitedResult[call.id].length === 0) {
+              try {
+                const { members } = await call.queryMembers({ limit: 12 });
+                if (members.length > 0) {
+                  const avatars = members.map((m) => ({
+                    src: memberAvatarUrl(m.user?.image, m.user?.name || m.user_id),
+                    alt: m.user?.name || m.user_id,
+                  }));
+                  memberResult[call.id] = avatars;
+                }
+              } catch (error) {
+                console.error('❌ [Avatars] queryMembers failed:', error);
+              }
+            }
+          }),
+        );
+
+        // Delay between batches
+        if (batchStart + BATCH_SIZE < targetCalls.length) {
+          await new Promise(resolve => setTimeout(resolve, BATCH_DELAY_MS));
+        }
+      }
 
       if (!cancelled) {
-        setMemberAvatars(result);
+        setMemberAvatars(memberResult);
+        setInvitedAvatars(invitedResult);
         setIsAvatarsLoading(false);
       }
     };
@@ -241,51 +325,19 @@ const CallList = ({ type }: { type: 'ended' | 'upcoming' | 'recordings' }) => {
 
   /**
    * Resolve avatars for a call.
-   * Ended: members who actually participated (from call.state.members or queryMembers)
-   * Upcoming: creator + Dicebear avatars for each invited email
+   * Upcoming & Ended: use invitations (from Prisma) first, fallback to Stream members
    */
   const resolveAvatars = (call: Call): ParticipantAvatar[] => {
-    const fromMembers = memberAvatars[call.id];
+    if (type !== 'upcoming' && type !== 'ended') return [];
 
-    // Upcoming: show creator + Dicebear avatar for each invited email
-    if (type === 'upcoming') {
-      if (fromMembers && fromMembers.length > 0) return fromMembers;
+    // Priority 1: invitations from Prisma (has host info + invited users)
+    const invited = invitedAvatars[call.id];
+    if (invited && invited.length > 0) return invited;
 
-      const result: ParticipantAvatar[] = [];
+    // Priority 2: Stream members
+    const members = memberAvatars[call.id];
+    if (members && members.length > 0) return members;
 
-      const creator = getCreatorInfo(call);
-      if (creator) result.push(creator);
-
-      // Get invited emails from custom data
-      const invitedEmails = call.state.custom?.invitedEmails as string[] | undefined;
-      if (invitedEmails && invitedEmails.length > 0) {
-        // Show Dicebear avatar for each invited email
-        for (const email of invitedEmails) {
-          result.push({
-            src: dicebearInitials(email),
-            alt: email,
-          });
-        }
-      }
-
-      // Only return avatars if we have creator or invitees
-      if (result.length > 0) return result;
-      // If no invitees, return empty array (no avatars shown)
-      return [];
-    }
-
-    // Ended: show members who actually participated
-    if (type === 'ended') {
-      console.log('📞 [ResolveEnded] Call:', call.id, 'fromMembers length:', fromMembers?.length, 'data:', fromMembers);
-      if (fromMembers && fromMembers.length > 0) {
-        console.log('  ✅ Returning memberAvatars:', fromMembers.map(a => a.alt));
-        return fromMembers;
-      }
-      console.log('  ⚠️ memberAvatars is empty, returning []');
-      return [];
-    }
-
-    // Recordings: no avatars needed
     return [];
   };
 
@@ -322,6 +374,7 @@ const CallList = ({ type }: { type: 'ended' | 'upcoming' | 'recordings' }) => {
               link={`${process.env.NEXT_PUBLIC_BASE_URL}/meeting/${meeting.id}`}
               buttonText="Start"
               handleClick={() => router.push(`/meeting/${meeting.id}`)}
+              isLoading={isAvatarsLoading}
             />
           ))
         )

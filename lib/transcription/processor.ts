@@ -24,29 +24,22 @@ export class TranscriptionProcessor {
   private readonly MIN_AUDIO_SIZE_BYTES = 20 * 1024; // Minimum 20KB blob size
   private readonly SILENCE_BEFORE_SEND_MS = 1200;    // Silence >= 1.2s triggers send
 
-  // ── STATE ───────────────────────────────────────────────────────────────
   private lastSendTime: number = 0;                  // Throttle timestamp
   private silenceStartTime: number | null = null;    // Track when silence began
   private isCurrentlySpeaking: boolean = false;      // VAD state
   private onVADStateChange: ((isSpeaking: boolean) => void) | null = null;
 
-  // Partial transcript tracking
   private recentTranscripts: Map<number, { text: string; count: number; lastSeen: number }> = new Map();
   private readonly STABILITY_WINDOW_MS = 1000;
 
-  // Translation cache
   private translationCache: Map<string, string> = new Map();
 
-  /**
-   * 检查是否正在录音
-   */
+  
   getIsRecording(): boolean {
     return this.isRecording;
   }
 
-  /**
-   * 更新 VAD 状态（由外部 VAD 调用）
-   */
+  
   setSpeakingState(isSpeaking: boolean): void {
     const wasSpeaking = this.isCurrentlySpeaking;
     this.isCurrentlySpeaking = isSpeaking;
@@ -55,8 +48,7 @@ export class TranscriptionProcessor {
       // 说话开始：清除静音计时器
       this.silenceStartTime = null;
     } else {
-      // 静音开始：立即清除已缓冲的音频（防止重复发送）
-      // 并且记录时间供 evaluateBuffer 使用
+     
       if (this.silenceStartTime === null) {
         this.silenceStartTime = Date.now();
         this.clearChunksOnSilence();
@@ -66,10 +58,7 @@ export class TranscriptionProcessor {
     this.onVADStateChange?.(isSpeaking);
   }
 
-  /**
-   * 静音时清除缓冲的音频块（不发送）
-   * 用于防止静音期间累积的音频被重复使用
-   */
+  
   private clearChunksOnSilence(): void {
     if (this.chunks.length > 0) {
       console.log(`[Processor] 🗑️ Silence detected: cleared ${this.chunks.length} buffered chunks`);
@@ -181,11 +170,7 @@ export class TranscriptionProcessor {
     }
   }
 
-  /**
-   * ── BUFFER EVALUATION ENGINE ─────────────────────────────────────────────
-   * 决定是否发送缓冲的音频数据
-   * 只在检测到 speech→silence transition 且静音超过阈值时发送
-   */
+  
   private async evaluateBuffer(): Promise<void> {
     // Skip if already processing (concurrency guard)
     if (this.isProcessing) {
@@ -198,9 +183,7 @@ export class TranscriptionProcessor {
       return;
     }
 
-    // ── ONLY SEND ON SPEECH → SILENCE TRANSITION ───────────────────────────
-    // 只在用户停止说话（静音）且达到阈值时发送
-    // 说话过程中（isCurrentlySpeaking = true）绝不发送
+    
     if (this.isCurrentlySpeaking) {
       console.log("[Buffer] ⏳ Still speaking, buffering...");
       return;
@@ -209,7 +192,6 @@ export class TranscriptionProcessor {
     const now = Date.now();
     const silenceDuration = this.silenceStartTime ? now - this.silenceStartTime : 0;
 
-    // 静音时间必须足够长（确保用户已说完）
     if (silenceDuration < this.SILENCE_BEFORE_SEND_MS) {
       console.log(`[Buffer] ⏳ Silence too short (${silenceDuration}ms < ${this.SILENCE_BEFORE_SEND_MS}ms)`);
       return;
@@ -515,8 +497,16 @@ export class TranscriptionProcessor {
       const data = await response.json();
 
       if (data.success && data.translated_text) {
+        const translated = data.translated_text as string;
+        
+        // Nếu translation giống text gốc hoặc rỗng, bỏ qua
+        if (translated === text || translated.trim() === '') {
+          console.log('[Translate] ⚠️ Translation returned same text, skipping');
+          return undefined;
+        }
+        
         // Cache kết quả
-        this.translationCache.set(cacheKey, data.translated_text as string);
+        this.translationCache.set(cacheKey, translated);
 
         // Giới hạn cache size (giữ 100 mục gần nhất)
         if (this.translationCache.size > 100) {

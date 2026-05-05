@@ -103,6 +103,9 @@ const MeetingRoom = ({ meetingId }: { meetingId: string }) => {
 
   // ── Mic warning toast ────────────────────────────────────────────────
   const [micWarning, setMicWarning] = useState(false);
+  
+  // ── Track if subtitles has ever been shown (for auto-show first transcript) ──
+  const hasAutoShownSubtitles = useRef(false);
 
   // ── AI Whisper Recorder (chỉ khởi tạo khi có call) ───────────────────
   const {
@@ -124,15 +127,14 @@ const MeetingRoom = ({ meetingId }: { meetingId: string }) => {
     }, []),
   });
 
-  // ── Auto-show subtitles when first transcript arrives ─────────────────
+  // ── Auto-show subtitles when first transcript arrives (only FIRST time) ──────
   useEffect(() => {
-    console.log("[MeetingRoom] Transcripts count:", allTranscripts.length, "showSubtitles:", showSubtitles);
-    console.log("[MeetingRoom] Transcripts data:", allTranscripts.map(t => ({ text: t.text, userId: t.userId, isFinal: t.isFinal })));
-    if (allTranscripts.length > 0 && !showSubtitles) {
-      console.log("[MeetingRoom] Auto-showing subtitles panel");
+    if (allTranscripts.length > 0 && !showSubtitles && !hasAutoShownSubtitles.current) {
+      console.log("[MeetingRoom] Auto-showing subtitles panel (first time only)");
+      hasAutoShownSubtitles.current = true;
       setShowSubtitles(true);
     }
-  }, [allTranscripts.length, showSubtitles, allTranscripts]);
+  }, [allTranscripts.length, showSubtitles]);
 
   // ── Stable callbacks (empty deps) ─────────────────────────────────────
   const handleToggleParticipants = useCallback(() => {

@@ -15,6 +15,7 @@ export async function sendMeetingInvitation(
     meetingName?: string;
     hostId?: string;
     hostName?: string;
+    hostAvatar?: string;
   },
 ) {
   const type = metadata?.type || 'instant';
@@ -88,6 +89,7 @@ export async function sendMeetingInvitation(
         meetingName,
         hostId,
         hostName,
+        hostAvatar: metadata?.hostAvatar || null,
         inviteeEmail: normalizedEmail,
         isRead: false,
         type,
@@ -95,24 +97,6 @@ export async function sendMeetingInvitation(
       },
     });
     console.log('📧 [Invite] Đã tạo invitation:', newInvitation);
-
-    // Also update Stream call custom data for backwards compatibility
-    try {
-      const response = await client.video.call("default", meetingId).get();
-      const currentCustom = response.call.custom || {};
-      const currentEmailsStr = (currentCustom.invitedEmailsStr as string) || '';
-      const currentEmailsList = (currentCustom.invitedEmails as string[]) || [];
-
-      await client.video.call("default", meetingId).update({
-        custom: {
-          ...currentCustom,
-          invitedEmails: [...currentEmailsList, normalizedEmail],
-          invitedEmailsStr: currentEmailsStr + `${normalizedEmail}|`,
-        },
-      });
-    } catch (streamError) {
-      console.warn('⚠️ [Invite] Stream update failed, but invitation saved to DB');
-    }
 
     return { success: true, message: 'Đã gửi lời mời thành công!' };
   } catch (error) {

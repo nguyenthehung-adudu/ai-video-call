@@ -1,5 +1,5 @@
 "use client";
-import React, { useState } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import HomeCard from './HomeCard';
 import { useRouter } from 'next/navigation';
 import MeetingModal from './MeetingModal';
@@ -15,8 +15,18 @@ import { Input } from './ui/input';
 import { buildInvitedEmailsStr, parseEmailList } from '@/lib/invite';
 import { memberAvatarUrl } from '@/lib/participant-avatar';
 import { useStreamVideoReady } from '@/providers/StreamVideoProvider';
+import { useGetCalls } from '@/hooks/useGetCalls';
+import {
+  useVerifyEmails,
+  useDebounce,
+} from '@/hooks/useVerifyEmails';
+import { VerifyUserResult } from '@/actions/verify-clerk-user';
+import { Loader2, Check, X, User, Plus, Trash2 } from 'lucide-react';
+import Image from 'next/image';
 
 registerLocale('vi', vi);
+
+const DEBOUNCE_MS = 500;
 
 // 👤 Real avatar helper via queryMembers on the scheduled call
 async function fetchScheduledCallAvatars(call: Call) {
@@ -48,12 +58,77 @@ const MeetingTypeList = () => {
     link: '',
   });
 
+  // Email verification state
+  const [emailInput, setEmailInput] = useState('');
+  const [addedEmails, setAddedEmails] = useState<string[]>([]);
+  const { verifyEmail, getStatus, getUserInfo, clearVerification, removeEmail, verifiedEmails, isChecking } = useVerifyEmails();
+  const debouncedEmailInput = useDebounce(emailInput, DEBOUNCE_MS);
+
+  // Debounce email verification
+  useEffect(() => {
+    if (debouncedEmailInput && debouncedEmailInput.includes('@')) {
+      const email = debouncedEmailInput.trim().toLowerCase();
+      if (email.match(/^[^\s@]+@[^\s@]+\.[^\s@]+$/) && !addedEmails.includes(email)) {
+        verifyEmail(email);
+      }
+    }
+  }, [debouncedEmailInput, verifyEmail, addedEmails]);
+
+  // Clean up verification when modal closes
+  useEffect(() => {
+    if (meetingState !== 'isScheduleMeeting') {
+      clearVerification();
+      setAddedEmails([]);
+      setEmailInput('');
+    }
+  }, [meetingState, clearVerification]);
+
+  const handleAddEmail = () => {
+    const email = emailInput.trim().toLowerCase();
+    if (email && email.match(/^[^\s@]+@[^\s@]+\.[^\s@]+$/) && !addedEmails.includes(email)) {
+      setAddedEmails([...addedEmails, email]);
+      setEmailInput('');
+      verifyEmail(email);
+    }
+  };
+
+  const handleRemoveEmail = (email: string) => {
+    setAddedEmails(addedEmails.filter(e => e !== email));
+    removeEmail(email);
+  };
+
+  const handleEmailKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
+    if (e.key === 'Enter') {
+      e.preventDefault();
+      handleAddEmail();
+    }
+  };
+
+  // Get all emails that have been verified as valid
+  const getValidEmails = useCallback((): string[] => {
+    return addedEmails.filter(email => {
+      const status = getStatus(email);
+      return status === 'valid';
+    });
+  }, [addedEmails, getStatus]);
+
+  // Get any invalid emails that user tried to add
+  const getInvalidEmails = useCallback((): string[] => {
+    return addedEmails.filter(email => {
+      const status = getStatus(email);
+      return status === 'invalid' || status === 'error';
+    });
+  }, [addedEmails, getStatus]);
+
   const [callDetail, setCallDetail] = useState<Call>();
   const [scheduledAvatars, setScheduledAvatars] = useState<
     { src: string; alt: string }[]
   >([]);
 
   const { toast } = useToast();
+
+  // Lấy forceRefetch để cập nhật danh sách cuộc họp sau khi tạo mới
+  const { forceRefetch } = useGetCalls();
 
   // ── Scheduled ────────────────────────────────────────────────
   const createScheduledMeeting = async () => {
@@ -63,9 +138,22 @@ const MeetingTypeList = () => {
       return;
     }
 
+    // Validate emails before creating meeting
+    const validEmails = getValidEmails();
+    const invalidEmails = getInvalidEmails();
+
+    if (addedEmails.length > 0 && invalidEmails.length > 0) {
+      toast({
+        title: 'Không thể tạo cuộc họp',
+        description: `Email không hợp lệ: ${invalidEmails.join(', ')}. Chỉ những user có tài khoản mới có thể được mời.`,
+        variant: 'destructive',
+      });
+      return;
+    }
+
     try {
       if (!values.dateTime) {
-        toast({ title: 'Please select a date and time' });
+        toast({ title: 'Vui lòng chọn ngày và giờ' });
         return;
       }
 
@@ -76,12 +164,20 @@ const MeetingTypeList = () => {
       const meetingName = values.meetingName.trim() || 'Cuộc họp đã lên lịch';
       const startsAt = values.dateTime.toISOString();
 
-      const invited = parseEmailList(values.invitedEmails);
+      // Use only verified emails for invitations
+      const invited = validEmails.map(e => e.toLowerCase().trim());
       const invitedEmailsStr = buildInvitedEmailsStr(invited);
+
+      // Thêm người tạo vào members để hiển thị trong "Cuộc họp sắp tới"
+      // Chỉ thêm host - không thêm invited emails vì họ chưa có tài khoản Stream
+      const allMembers = [
+        { user_id: user.id },
+      ];
 
       await call.getOrCreate({
         data: {
           starts_at: startsAt,
+          members: allMembers,
           custom: {
             description: meetingName,
             invitedEmails: invited,
@@ -105,9 +201,13 @@ const MeetingTypeList = () => {
             meetingName,
             hostId: user.id,
             hostName: user.fullName || user.primaryEmailAddress?.emailAddress || 'Người tổ chức',
+            hostAvatar: user.imageUrl || undefined,
           });
         }
       }
+
+      // Refresh danh sách cuộc họp trước khi chuyển trang
+      await forceRefetch();
 
       setCallDetail(call);
 
@@ -118,13 +218,15 @@ const MeetingTypeList = () => {
       console.log('[invite] Scheduled notifications sent to:', invited, 'link:', link);
 
       if (!values.meetingName.trim()) {
+        // Small delay to allow the backend to index the new call
+        await new Promise(resolve => setTimeout(resolve, 300));
         router.push(`/meeting/${call.id}`);
       }
 
-      toast({ title: 'Meeting Created' });
+      toast({ title: 'Đã tạo cuộc họp' });
     } catch (error) {
       console.error(error);
-      toast({ title: 'Error creating meeting' });
+      toast({ title: 'Lỗi khi tạo cuộc họp' });
     }
   };
 
@@ -160,6 +262,7 @@ const MeetingTypeList = () => {
       await call.getOrCreate({
         data: {
           starts_at: new Date().toISOString(),
+          members: [{ user_id: user.id }],
           custom: {
             description: meetingName,
           },
@@ -172,7 +275,7 @@ const MeetingTypeList = () => {
       setMeetingState(undefined);
     } catch (error) {
       console.error('❌ [MeetingTypeList] Error:', error);
-      toast({ title: 'Error creating meeting' });
+      toast({ title: 'Lỗi khi tạo cuộc họp' });
     }
   };
 
@@ -219,6 +322,8 @@ const MeetingTypeList = () => {
           onClose={() => setMeetingState(undefined)}
           title="Lên lịch cuộc họp"
           handleClick={createScheduledMeeting}
+          buttonText={isChecking ? 'Đang xác minh...' : undefined}
+          disabled={isChecking || (addedEmails.length > 0 && getInvalidEmails().length > 0)}
         >
           <div className="flex flex-col gap-2.5">
             <label className="text-base leading-[22px] text-sky-2">
@@ -233,19 +338,172 @@ const MeetingTypeList = () => {
               }
             />
           </div>
+
+          {/* Email invitation section with verification */}
           <div className="flex flex-col gap-2.5">
             <label className="text-base leading-[22px] text-sky-2">
-              Mời qua email (cách nhau bởi dấu phẩy)
+              Mời người tham gia
             </label>
-            <Input
-              placeholder="email1@domain.com, email2@domain.com"
-              className="border-none bg-dark-3 focus-visible:ring-0 focus-visible:ring-offset-0"
-              value={values.invitedEmails}
-              onChange={(e) =>
-                setValues({ ...values, invitedEmails: e.target.value })
-              }
-            />
+
+            {/* Email input with add button */}
+            <div className="flex gap-2">
+              <Input
+                type="email"
+                placeholder="Nhập email và nhấn Enter"
+                className="border-none bg-dark-3 focus-visible:ring-0 focus-visible:ring-offset-0"
+                value={emailInput}
+                onChange={(e) => setEmailInput(e.target.value)}
+                onKeyDown={handleEmailKeyDown}
+              />
+              <button
+                type="button"
+                onClick={handleAddEmail}
+                disabled={!emailInput || !emailInput.includes('@')}
+                className="flex items-center gap-1 rounded bg-blue-600 px-3 py-2 text-sm font-medium text-white transition-colors hover:bg-blue-700 disabled:opacity-50"
+              >
+                <Plus className="h-4 w-4" />
+                Thêm
+              </button>
+            </div>
+
+            {/* Email verification preview */}
+            {debouncedEmailInput && debouncedEmailInput.includes('@') && debouncedEmailInput.match(/^[^\s@]+@[^\s@]+\.[^\s@]+$/) && !addedEmails.includes(debouncedEmailInput.toLowerCase()) && (
+              <div className={`flex items-center gap-3 rounded-lg border p-3 ${
+                getStatus(debouncedEmailInput.toLowerCase()) === 'valid' ? 'border-green-500 bg-green-500/10' :
+                getStatus(debouncedEmailInput.toLowerCase()) === 'invalid' ? 'border-red-500 bg-red-500/10' :
+                getStatus(debouncedEmailInput.toLowerCase()) === 'checking' ? 'border-blue-500 bg-blue-500/10' :
+                'border-gray-500 bg-dark-3'
+              }`}>
+                {getStatus(debouncedEmailInput.toLowerCase()) === 'checking' && (
+                  <>
+                    <Loader2 className="h-5 w-5 animate-spin text-blue-500" />
+                    <div className="flex flex-col">
+                      <span className="text-sm text-gray-300">{debouncedEmailInput}</span>
+                      <span className="text-xs text-gray-400">Đang kiểm tra...</span>
+                    </div>
+                  </>
+                )}
+                {getStatus(debouncedEmailInput.toLowerCase()) === 'valid' && (
+                  <>
+                    {getUserInfo(debouncedEmailInput.toLowerCase())?.imageUrl ? (
+                      <Image
+                        src={getUserInfo(debouncedEmailInput.toLowerCase())!.imageUrl!}
+                        alt="Avatar"
+                        width={36}
+                        height={36}
+                        className="rounded-full"
+                      />
+                    ) : (
+                      <div className="flex h-9 w-9 items-center justify-center rounded-full bg-green-600">
+                        <User className="h-5 w-5 text-white" />
+                      </div>
+                    )}
+                    <div className="flex flex-col">
+                      <span className="text-sm font-medium text-green-500">
+                        {getUserInfo(debouncedEmailInput.toLowerCase())?.fullName || 'User'}
+                      </span>
+                      <span className="text-xs text-gray-400">{debouncedEmailInput}</span>
+                    </div>
+                    <Check className="ml-auto h-5 w-5 text-green-500" />
+                  </>
+                )}
+                {getStatus(debouncedEmailInput.toLowerCase()) === 'invalid' && (
+                  <>
+                    <div className="flex h-9 w-9 items-center justify-center rounded-full bg-red-600">
+                      <X className="h-5 w-5 text-white" />
+                    </div>
+                    <div className="flex flex-col">
+                      <span className="text-sm font-medium text-red-500">Không tìm thấy</span>
+                      <span className="text-xs text-gray-400">Người dùng chưa có tài khoản</span>
+                    </div>
+                    <X className="ml-auto h-5 w-5 text-red-500" />
+                  </>
+                )}
+              </div>
+            )}
+
+            {/* Added emails list */}
+            {addedEmails.length > 0 && (
+              <div className="mt-2 flex flex-col gap-2">
+                <span className="text-sm text-sky-2">
+                  Đã mời ({addedEmails.length})
+                </span>
+                <div className="flex flex-col gap-1">
+                  {addedEmails.map((email) => {
+                    const status = getStatus(email);
+                    const userInfo = getUserInfo(email);
+                    return (
+                      <div
+                        key={email}
+                        className={`flex items-center gap-3 rounded-lg border p-2 ${
+                          status === 'valid' ? 'border-green-500/50 bg-green-500/5' :
+                          status === 'invalid' ? 'border-red-500/50 bg-red-500/5' :
+                          status === 'checking' ? 'border-blue-500/50 bg-blue-500/5' :
+                          'border-gray-500/50 bg-dark-3'
+                        }`}
+                      >
+                        {status === 'checking' && (
+                          <>
+                            <Loader2 className="h-5 w-5 animate-spin text-blue-500" />
+                            <span className="text-sm text-gray-300">{email}</span>
+                          </>
+                        )}
+                        {status === 'valid' && (
+                          <>
+                            {userInfo?.imageUrl ? (
+                              <Image
+                                src={userInfo.imageUrl}
+                                alt={userInfo.fullName || email}
+                                width={32}
+                                height={32}
+                                className="rounded-full"
+                              />
+                            ) : (
+                              <div className="flex h-8 w-8 items-center justify-center rounded-full bg-green-600">
+                                <User className="h-4 w-4 text-white" />
+                              </div>
+                            )}
+                            <div className="flex flex-col">
+                              <span className="text-sm font-medium text-white">
+                                {userInfo?.fullName || 'User'}
+                              </span>
+                              <span className="text-xs text-gray-400">{email}</span>
+                            </div>
+                            <button
+                              type="button"
+                              onClick={() => handleRemoveEmail(email)}
+                              className="ml-auto rounded p-1 text-gray-400 hover:bg-red-500/20 hover:text-red-400"
+                            >
+                              <Trash2 className="h-4 w-4" />
+                            </button>
+                          </>
+                        )}
+                        {status === 'invalid' && (
+                          <>
+                            <div className="flex h-8 w-8 items-center justify-center rounded-full bg-red-600">
+                              <X className="h-4 w-4 text-white" />
+                            </div>
+                            <div className="flex flex-col">
+                              <span className="text-sm text-red-400">{email}</span>
+                              <span className="text-xs text-red-400/70">Không tìm thấy user</span>
+                            </div>
+                            <button
+                              type="button"
+                              onClick={() => handleRemoveEmail(email)}
+                              className="ml-auto rounded p-1 text-gray-400 hover:bg-red-500/20 hover:text-red-400"
+                            >
+                              <Trash2 className="h-4 w-4" />
+                            </button>
+                          </>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
           </div>
+
           <div className="flex w-full flex-col gap-2.5">
             <label className="text-base leading-[22px] text-sky-2">
               Chọn ngày và giờ
@@ -272,7 +530,7 @@ const MeetingTypeList = () => {
           title="Cuộc họp đã được lên lịch"
           handleClick={() => {
             void navigator.clipboard.writeText(meetingLink);
-            toast({ title: 'Meeting link copied to clipboard' });
+            toast({ title: 'Đã sao chép liên kết cuộc họp' });
           }}
           image="/icons/schedule.svg"
           buttonIcon="/icons/copy.svg"
@@ -311,11 +569,11 @@ const MeetingTypeList = () => {
         onClose={() => setMeetingState(undefined)}
         title="Tham gia cuộc họp"
         className="text-center"
-        buttonText="Join Meeting"
+        buttonText="Tham gia"
         handleClick={() => router.push(values.link)}
       >
         <Input
-          placeholder="Paste meeting link here"
+          placeholder="Dán liên kết cuộc họp vào đây"
           onChange={(e) => setValues({ ...values, link: e.target.value })}
           className="border-none bg-dark-3 focus-visible:ring-0 focus-visible:ring-offset-0"
         />

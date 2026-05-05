@@ -1,9 +1,10 @@
 "use client";
 import { ReactNode } from "react";
-import { Dialog, DialogContent } from "./ui/dialog";
+import { Dialog, DialogContent, DialogTitle } from "./ui/dialog";
 import { cn } from "@/lib/utils";
 import { Button } from "./ui/button";
 import Image from "next/image";
+import { VisuallyHidden } from "@radix-ui/react-visually-hidden";
 
 interface MeetingModalProps {
   isOpen: boolean;
@@ -37,6 +38,9 @@ const MeetingModal = ({
   return (
     <Dialog open={isOpen} onOpenChange={onClose}>
       <DialogContent className="flex w-full max-w-[520px] flex-col gap-6 border-none bg-dark-1 px-6 py-9 text-white">
+        <VisuallyHidden asChild>
+          <DialogTitle>{title}</DialogTitle>
+        </VisuallyHidden>
         <div className="flex flex-col gap-6">
           {image && (
             <div className="flex justify-center">

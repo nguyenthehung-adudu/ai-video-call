@@ -54,11 +54,8 @@ export const useGetCalls = () => {
     };
 
     if (userEmail) {
-      baseFilter.$or.push({
-        'custom.invitedEmailsStr': {
-          $regex: `\\|${userEmail.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\|`,
-        },
-      });
+      // Note: Stream API doesn't support $regex, so we only use $in for exact match
+      // Additional filtering is done client-side below
       baseFilter.$or.push({
         'custom.invitedEmails': {
           $in: [userEmail],
@@ -66,7 +63,7 @@ export const useGetCalls = () => {
       });
     }
 
-    try {
+    const fetchCalls = async (): Promise<Call[]> => {
       const { calls: fetched } = await activeClient.queryCalls({
         sort: [{ field: 'starts_at', direction: -1 }],
         filter_conditions: baseFilter as never,
@@ -89,9 +86,22 @@ export const useGetCalls = () => {
           unique.set(call.id, call);
         }
       }
+      return [...unique.values()];
+    };
+
+    try {
+      let result = await fetchCalls();
+      // Retry up to 2 times with delay for newly created calls to be indexed
+      if (result.length === 0) {
+        for (let i = 0; i < 2; i++) {
+          await new Promise(resolve => setTimeout(resolve, 500));
+          result = await fetchCalls();
+          if (result.length > 0) break;
+        }
+      }
 
       if (isMountedRef.current) {
-        setCalls([...unique.values()]);
+        setCalls(result);
       }
     } catch (error) {
       console.error('❌ [Calls] Refetch failed:', error);
@@ -122,13 +132,8 @@ export const useGetCalls = () => {
     };
 
     if (userEmail) {
-      // Primary check: invitedEmailsStr with pipe delimiters
-      baseFilter.$or.push({
-        'custom.invitedEmailsStr': {
-          $regex: `\\|${userEmail.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\|`,
-        },
-      });
-      // Fallback: check invitedEmails array directly
+      // Note: Stream API doesn't support $regex, so we only use $in for exact match
+      // Additional filtering is done client-side below
       baseFilter.$or.push({
         'custom.invitedEmails': {
           $in: [userEmail],
@@ -236,7 +241,23 @@ export const useGetCalls = () => {
             time: Date.now() - fbStart + 'ms',
           });
 
-          setCalls(fb ?? []);
+          // Apply same email filtering as main query
+          const email = userEmailRef.current;
+          const unique = new Map<string, Call>();
+          for (const call of fb ?? []) {
+            if (unique.has(call.id)) continue;
+            const searchStr = call.state.custom?.invitedEmailsStr as string | undefined;
+            const invitedEmailsArray = call.state.custom?.invitedEmails as string[] | undefined;
+            const hostId = call.state.createdBy?.id;
+            const isCreator = hostId === uid;
+            const isMember = call.state.members?.some((m) => m.user_id === uid);
+            const isInvitedStr = email && typeof searchStr === 'string' ? searchStr.includes(`|${email}|`) : false;
+            const isInvitedArray = email && Array.isArray(invitedEmailsArray) ? invitedEmailsArray.includes(email) : false;
+            if (isCreator || isMember || isInvitedStr || isInvitedArray) {
+              unique.set(call.id, call);
+            }
+          }
+          setCalls([...unique.values()]);
         } catch (e2) {
           if (!isMountedRef.current) return;
           console.error('❌ [Calls] Fallback FAILED:', e2);
@@ -250,6 +271,11 @@ export const useGetCalls = () => {
 
     void load();
   }, [client, user?.id]);
+
+  // Refetch when component mounts (handles navigation from home → upcoming)
+  useEffect(() => {
+    void forceRefetch();
+  }, [forceRefetch]);
 
   const endedCalls = useMemo(() => {
     if (!calls) return undefined;

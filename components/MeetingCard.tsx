@@ -29,6 +29,8 @@ interface MeetingCardProps {
   showDelete?: boolean;
   /** Callback when delete button is clicked */
   onDelete?: () => void;
+  /** Show skeleton avatars while loading (avatars not yet fetched) */
+  isLoading?: boolean;
 }
 
 const MeetingCard = ({
@@ -46,6 +48,7 @@ const MeetingCard = ({
   invitedBadge,
   showDelete,
   onDelete,
+  isLoading,
 }: MeetingCardProps) => {
   const { toast } = useToast();
   const whenLine = subtitle ?? date ?? '—';
@@ -90,7 +93,18 @@ const MeetingCard = ({
       {/* Avatars row */}
       <article className="flex justify-center relative">
         <div className="relative flex min-h-[40px] w-full max-sm:hidden items-center">
-          {hasRealAvatars ? (
+          {isLoading ? (
+            // Skeleton placeholders while loading
+            <>
+              {[0, 1, 2].map((i) => (
+                <div
+                  key={i}
+                  className="absolute rounded-full bg-dark-3 animate-pulse border-2 border-dark-1"
+                  style={{ width: 40, height: 40, left: i * 28, top: 0 }}
+                />
+              ))}
+            </>
+          ) : hasRealAvatars ? (
             participantAvatars!.slice(0, 6).map((a, i) => (
               // eslint-disable-next-line @next/next/no-img-element
               <img

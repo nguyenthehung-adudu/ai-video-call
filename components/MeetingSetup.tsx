@@ -3,10 +3,12 @@ import { VideoPreview, useCall } from '@stream-io/video-react-sdk';
 import React, { useState, useEffect, useCallback } from 'react';
 import { DeviceSettings } from '@stream-io/video-react-sdk';
 import { Button } from './ui/button';
+import { useUser } from '@clerk/nextjs';
 
 const MeetingSetup = ({ setIsSetupComplete }: { setIsSetupComplete: (value: boolean) => void }) => {
   const [isMicCamToggledOn, setIsMicCamToggledOn] = useState(false);
   const call = useCall();
+  const { user } = useUser();
 
   console.log("⚙️ [MeetingSetup] Render:", {
     hasCall: !!call,
@@ -35,18 +37,34 @@ const MeetingSetup = ({ setIsSetupComplete }: { setIsSetupComplete: (value: bool
     }
 
     console.log("⚙️ [MeetingSetup] Calling call.join()...");
-    
+
     try {
+      // Add current user as a member so they appear in participant lists
+      const userId = user?.id;
+      if (userId) {
+        console.log("⚙️ [MeetingSetup] Adding member:", userId);
+        try {
+          await call.updateCallMembers({
+            update_members: [{
+              user_id: userId,
+              role: 'participant',
+            }],
+          });
+        } catch (memberErr) {
+          console.warn("⚙️ [MeetingSetup] Could not update members:", memberErr);
+        }
+      }
+
       await call.join();
       console.log("⚙️ [MeetingSetup] call.join() SUCCESS");
     } catch (err) {
       console.error("⚙️ [MeetingSetup] call.join() ERROR:", err);
     }
-    
+
     console.log("⚙️ [MeetingSetup] Setting isSetupComplete(true)...");
     setIsSetupComplete(true);
     console.log("⚙️ [MeetingSetup] Done!");
-  }, [call, setIsSetupComplete]);
+  }, [call, setIsSetupComplete, user]);
 
   if (!call) {
     console.error("⚙️ [MeetingSetup] call is NULL!");
