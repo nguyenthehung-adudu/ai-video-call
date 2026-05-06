@@ -64,7 +64,7 @@ const MeetingCard = ({
           <img src={icon} alt="" width={28} height={28} />
           {invitedBadge ? (
             <span className="rounded-full bg-purple-600/80 px-2 py-0.5 text-xs font-medium text-white">
-              You&apos;re invited
+              Bạn được mời
             </span>
           ) : null}
         </div>

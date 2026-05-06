@@ -26,6 +26,12 @@ export async function sendMeetingInvitation(
   try {
     const normalizedEmail = email.toLowerCase().trim();
     console.log('📧 [Invite] Email đã normalize:', normalizedEmail);
+    console.log('📧 [Invite] Original vs Normalized:', {
+      original: email,
+      normalized: normalizedEmail,
+      hasTrailingSpace: email !== normalizedEmail,
+      hasUpperCase: email !== normalizedEmail && email.toLowerCase() === normalizedEmail
+    });
 
     const client = new StreamClient(API_KEY, API_SECRET);
     console.log('📧 [Invite] Stream client đã tạo');
@@ -80,6 +86,7 @@ export async function sendMeetingInvitation(
       hostName,
       hostId,
       inviteeEmail: normalizedEmail,
+      hostAvatar: metadata?.hostAvatar,
       isRead: false
     });
     

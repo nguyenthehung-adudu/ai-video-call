@@ -4,6 +4,7 @@ import { Call, CallRecording } from '@stream-io/video-react-sdk';
 import Loader from './Loader';
 import { useGetCalls } from '@/hooks/useGetCalls';
 import MeetingCard, { ParticipantAvatar } from './MeetingCard';
+import RecordingCard from './RecordingCard';
 import { useEffect, useMemo, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { formatMeetingDateTime } from '@/lib/utils';
@@ -154,6 +155,18 @@ const CallList = ({ type }: { type: 'ended' | 'upcoming' | 'recordings' }) => {
                   .map((inv) => inv.inviteeEmail)
                   .filter((email): email is string => !!email);
 
+                // Debug: Log all inviteeEmails as received from DB
+                console.log('🔍 [CallList] Invitee emails from DB:', {
+                  count: inviteeEmails.length,
+                  emails: inviteeEmails,
+                  raw: invResult.invitations.map(inv => ({
+                    email: inv.inviteeEmail,
+                    hasSpaces: inv.inviteeEmail?.startsWith(' ') || inv.inviteeEmail?.endsWith(' '),
+                    length: inv.inviteeEmail?.length,
+                    charCodes: [...(inv.inviteeEmail || '')].map(c => c.charCodeAt(0))
+                  }))
+                });
+
                 // Batch fetch Clerk user profiles via API
                 let clerkUsersMap: Record<string, ClerkUserProfile> = {};
                 if (inviteeEmails.length > 0) {
@@ -165,6 +178,18 @@ const CallList = ({ type }: { type: 'ended' | 'upcoming' | 'recordings' }) => {
                       const data = await response.json();
                       if (data.success) {
                         clerkUsersMap = data.users;
+                        console.log('🔍 [CallList] Clerk API response:', {
+                          requestedEmails: inviteeEmails,
+                          matchedUsers: Object.keys(clerkUsersMap),
+                          unmatchedEmails: inviteeEmails.filter(e => !clerkUsersMap[e.toLowerCase()]),
+                          totalMatched: Object.keys(clerkUsersMap).length,
+                          userDetails: Object.entries(clerkUsersMap).map(([email, user]) => ({
+                            email,
+                            userId: user.userId,
+                            imageUrl: user.imageUrl,
+                            firstName: user.firstName
+                          }))
+                        });
                       }
                     }
                   } catch (fetchError) {
@@ -176,6 +201,12 @@ const CallList = ({ type }: { type: 'ended' | 'upcoming' | 'recordings' }) => {
 
                 // First invitation has host info
                 const firstInv = invResult.invitations[0];
+                console.log('🔍 [CallList] First invitation (host info):', {
+                  hostName: firstInv.hostName,
+                  hostAvatar: firstInv.hostAvatar,
+                  hostAvatarType: typeof firstInv.hostAvatar,
+                  hostAvatarLength: firstInv.hostAvatar?.length,
+                });
                 if (firstInv.hostName) {
                   avatars.push({
                     src: memberAvatarUrl(firstInv.hostAvatar || null, firstInv.hostName),
@@ -186,13 +217,35 @@ const CallList = ({ type }: { type: 'ended' | 'upcoming' | 'recordings' }) => {
                 // Add invited users with real Clerk avatars or Dicebear initials fallback
                 for (const inv of invResult.invitations) {
                   if (inv.inviteeEmail) {
-                    const normalizedEmail = inv.inviteeEmail.toLowerCase();
+                    // Normalize email for lookup - BOTH trim AND lowercase
+                    const normalizedEmail = inv.inviteeEmail.trim().toLowerCase();
+                    
+                    // Debug: Log the normalization step
+                    console.log('🔍 [CallList] Processing invitation:', {
+                      originalEmail: inv.inviteeEmail,
+                      hasLeadingSpace: inv.inviteeEmail.startsWith(' '),
+                      hasTrailingSpace: inv.inviteeEmail.endsWith(' '),
+                      originalLength: inv.inviteeEmail.length,
+                      normalizedEmail,
+                      normalizedLength: normalizedEmail.length,
+                      availableInClerkMap: Object.keys(clerkUsersMap)
+                    });
+                    
                     const clerkUser = clerkUsersMap[normalizedEmail];
 
                     let avatarSrc: string;
                     let avatarAlt: string;
 
                     if (clerkUser) {
+                      // User found in Clerk - should show real avatar
+                      console.log('✅ [CallList] User FOUND in Clerk:', {
+                        email: normalizedEmail,
+                        userId: clerkUser.userId,
+                        imageUrl: clerkUser.imageUrl,
+                        firstName: clerkUser.firstName,
+                        lastName: clerkUser.lastName
+                      });
+                      
                       // Use Clerk imageUrl if available, otherwise generate initials
                       avatarSrc = memberAvatarUrl(
                         clerkUser.imageUrl || null,
@@ -203,6 +256,12 @@ const CallList = ({ type }: { type: 'ended' | 'upcoming' | 'recordings' }) => {
                         .join(' ') || inv.inviteeEmail;
                     } else {
                       // Fallback to Dicebear initials if user not found in Clerk
+                      console.log('⚠️ [CallList] User NOT FOUND in Clerk - using fallback initials:', {
+                        email: normalizedEmail,
+                        lookedUpKey: normalizedEmail,
+                        availableKeys: Object.keys(clerkUsersMap),
+                        reason: 'User may not exist in Clerk OR email casing mismatch OR user is not yet synced'
+                      });
                       avatarSrc = dicebearInitials(inv.inviteeEmail);
                       avatarAlt = inv.inviteeEmail;
                     }
@@ -347,16 +406,11 @@ const CallList = ({ type }: { type: 'ended' | 'upcoming' | 'recordings' }) => {
       {calls && calls.length > 0 ? (
         type === 'recordings' ? (
           (calls as RecordingWithCall[]).map(({ call, recording }) => (
-            <MeetingCard
+            <RecordingCard
               key={`${call.id}-${recording.session_id}`}
-              icon="/icons/recordings.svg"
+              recording={recording}
               title={meetingTitle(call)}
-              subtitle={meetingWhen(call, recording)}
-              hideCopyLink
-              link={recording.url}
-              buttonIcon1="/icons/play.svg"
-              buttonText="Play"
-              handleClick={() => router.push(recording.url)}
+              date={meetingWhen(call, recording)}
             />
           ))
         ) : (

@@ -61,6 +61,8 @@ const MeetingTypeList = () => {
   // Email verification state
   const [emailInput, setEmailInput] = useState('');
   const [addedEmails, setAddedEmails] = useState<string[]>([]);
+  // Map email → userId for adding to call members
+  const [emailToUserId, setEmailToUserId] = useState<Map<string, string>>(new Map());
   const { verifyEmail, getStatus, getUserInfo, clearVerification, removeEmail, verifiedEmails, isChecking } = useVerifyEmails();
   const debouncedEmailInput = useDebounce(emailInput, DEBOUNCE_MS);
 
@@ -80,17 +82,60 @@ const MeetingTypeList = () => {
       clearVerification();
       setAddedEmails([]);
       setEmailInput('');
+      setEmailToUserId(new Map());
     }
   }, [meetingState, clearVerification]);
 
   const handleAddEmail = () => {
     const email = emailInput.trim().toLowerCase();
+    const currentUserEmail = user?.primaryEmailAddress?.emailAddress?.toLowerCase();
+
+    // Check if email is the same as current user's email
+    if (email && currentUserEmail && email === currentUserEmail) {
+      toast({
+        title: 'Không thể thêm email',
+        description: 'Bạn không thể mời chính mình tham gia cuộc họp.',
+        variant: 'destructive',
+      });
+      return;
+    }
+
+    // Check email format
+    if (email && !email.match(/^[^\s@]+@[^\s@]+\.[^\s@]+$/)) {
+      toast({
+        title: 'Email không hợp lệ',
+        description: 'Vui lòng nhập đúng định dạng email (ví dụ: example@domain.com).',
+        variant: 'destructive',
+      });
+      return;
+    }
+
     if (email && email.match(/^[^\s@]+@[^\s@]+\.[^\s@]+$/) && !addedEmails.includes(email)) {
       setAddedEmails([...addedEmails, email]);
       setEmailInput('');
       verifyEmail(email);
     }
   };
+
+  // Get userId for an email from verification results
+  const getUserIdByEmail = useCallback((email: string): string | undefined => {
+    const userInfo = getUserInfo(email);
+    return userInfo?.userId;
+  }, [getUserInfo]);
+
+  // Get all valid emails with their userIds
+  const getValidInvitees = useCallback((): { email: string; userId: string }[] => {
+    return addedEmails
+      .filter(email => {
+        const status = getStatus(email);
+        return status === 'valid';
+      })
+      .map(email => {
+        const userId = getUserIdByEmail(email);
+        return { email, userId: userId || '' };
+      })
+      .filter(invitee => invitee.userId); // Only include those with valid userId
+  }, [addedEmails, getStatus, getUserIdByEmail]);
 
   const handleRemoveEmail = (email: string) => {
     setAddedEmails(addedEmails.filter(e => e !== email));
@@ -109,6 +154,14 @@ const MeetingTypeList = () => {
     return addedEmails.filter(email => {
       const status = getStatus(email);
       return status === 'valid';
+    });
+  }, [addedEmails, getStatus]);
+
+  // Get all emails that are still being verified (not yet resolved)
+  const getPendingEmails = useCallback((): string[] => {
+    return addedEmails.filter(email => {
+      const status = getStatus(email);
+      return status === 'idle' || status === 'checking';
     });
   }, [addedEmails, getStatus]);
 
@@ -141,11 +194,22 @@ const MeetingTypeList = () => {
     // Validate emails before creating meeting
     const validEmails = getValidEmails();
     const invalidEmails = getInvalidEmails();
+    const pendingEmails = getPendingEmails();
 
     if (addedEmails.length > 0 && invalidEmails.length > 0) {
       toast({
         title: 'Không thể tạo cuộc họp',
         description: `Email không hợp lệ: ${invalidEmails.join(', ')}. Chỉ những user có tài khoản mới có thể được mời.`,
+        variant: 'destructive',
+      });
+      return;
+    }
+
+    // Wait for pending verifications to complete
+    if (addedEmails.length > 0 && pendingEmails.length > 0) {
+      toast({
+        title: 'Vui lòng chờ',
+        description: `Đang xác minh email: ${pendingEmails.join(', ')}. Vui lòng chờ hoàn tất.`,
         variant: 'destructive',
       });
       return;
@@ -168,10 +232,13 @@ const MeetingTypeList = () => {
       const invited = validEmails.map(e => e.toLowerCase().trim());
       const invitedEmailsStr = buildInvitedEmailsStr(invited);
 
-      // Thêm người tạo vào members để hiển thị trong "Cuộc họp sắp tới"
-      // Chỉ thêm host - không thêm invited emails vì họ chưa có tài khoản Stream
+      // Get valid invitees with their userIds for adding to call members
+      const validInvitees = getValidInvitees();
+
+      // Add host and all verified invitees to call members
       const allMembers = [
         { user_id: user.id },
+        ...validInvitees.map(invitee => ({ user_id: invitee.userId })),
       ];
 
       await call.getOrCreate({
@@ -187,7 +254,10 @@ const MeetingTypeList = () => {
       });
 
       // Also upsert chat channel so invited users can access the channel
-      const allIds = [user.id]; // TODO: resolve email → userId for real notifications
+      const allIds = [
+        user.id,
+        ...validInvitees.map(invitee => invitee.userId),
+      ];
       const { ensureMeetingChatChannel } = await import('@/actions/stream.actions');
       await ensureMeetingChatChannel(call.id, allIds);
 
@@ -195,13 +265,22 @@ const MeetingTypeList = () => {
       if (invited.length > 0) {
         const { sendMeetingInvitation } = await import('@/actions/invite.actions');
         for (const inviteeEmail of invited) {
+          // Ensure hostAvatar is always a string (not null/undefined) for consistency
+          const hostAvatarUrl = user.imageUrl || undefined;
+          console.log('📧 [MeetingTypeList] Sending invitation:', {
+            inviteeEmail,
+            currentUserId: user.id,
+            currentUserEmail: user.primaryEmailAddress?.emailAddress,
+            hostName: user.fullName || user.primaryEmailAddress?.emailAddress || 'Người tổ chức',
+            hostAvatar: hostAvatarUrl,
+          });
           await sendMeetingInvitation(call.id, inviteeEmail, {
             type: 'scheduled',
             scheduledAt: values.dateTime,
             meetingName,
             hostId: user.id,
             hostName: user.fullName || user.primaryEmailAddress?.emailAddress || 'Người tổ chức',
-            hostAvatar: user.imageUrl || undefined,
+            hostAvatar: hostAvatarUrl,
           });
         }
       }
@@ -323,7 +402,7 @@ const MeetingTypeList = () => {
           title="Lên lịch cuộc họp"
           handleClick={createScheduledMeeting}
           buttonText={isChecking ? 'Đang xác minh...' : undefined}
-          disabled={isChecking || (addedEmails.length > 0 && getInvalidEmails().length > 0)}
+          disabled={isChecking || (addedEmails.length > 0 && (getInvalidEmails().length > 0 || getPendingEmails().length > 0))}
         >
           <div className="flex flex-col gap-2.5">
             <label className="text-base leading-[22px] text-sky-2">

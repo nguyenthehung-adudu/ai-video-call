@@ -107,6 +107,32 @@ const MeetingRoom = ({ meetingId }: { meetingId: string }) => {
   // ── Track if subtitles has ever been shown (for auto-show first transcript) ──
   const hasAutoShownSubtitles = useRef(false);
 
+  // ── Real-time clock ────────────────────────────────────────────────
+  const [currentTime, setCurrentTime] = useState(new Date());
+
+  useEffect(() => {
+    const interval = setInterval(() => {
+      setCurrentTime(new Date());
+    }, 1000);
+    return () => clearInterval(interval);
+  }, []);
+
+  const formattedTime = currentTime.toLocaleTimeString("en-US", {
+    hour: "numeric",
+    minute: "2-digit",
+    hour12: true,
+  });
+
+  // ── Room name from call metadata ──────────────────────────────────
+  const roomName = useMemo(() => {
+    if (!call) return meetingId;
+    // Get from call.state.custom.description
+    const description = (call as any).state?.custom?.description;
+    return typeof description === 'string' && description.trim()
+      ? description.trim()
+      : meetingId;
+  }, [call, meetingId]);
+
   // ── AI Whisper Recorder (chỉ khởi tạo khi có call) ───────────────────
   const {
     status: recorderStatus,
@@ -242,6 +268,13 @@ const MeetingRoom = ({ meetingId }: { meetingId: string }) => {
 
   return (
     <div className="relative h-screen w-full text-white">
+      {/* ── Room Header: Time & Room Name ─────────────────────────── */}
+      <div className="fixed top-4 left-4 z-50 flex items-center gap-2 px-4 py-2">
+        <span className="text-sm font-mono text-white/90">{formattedTime}</span>
+        <span className="text-white/50">|</span>
+        <span className="text-sm font-medium text-white truncate max-w-[200px]">{roomName}</span>
+      </div>
+
       {/* ── Video ─────────────────────────────────────────────── */}
       <section
         className="relative h-full w-full overflow-hidden pt-4"
@@ -342,7 +375,7 @@ const MeetingRoom = ({ meetingId }: { meetingId: string }) => {
             >
               <Languages size={20} />
               <span className="text-sm font-medium">
-                {recorderStatus === "stopping" ? "Đang dừng..." : isRecording ? "Stop AI" : "Start AI"}
+                {recorderStatus === "stopping" ? "Đang dừng..." : isRecording ? "kết thúc dịch" : "bắt đầu dịch"}
               </span>
               {isRecording && (
                 <span className="text-xs text-red-200 animate-pulse">

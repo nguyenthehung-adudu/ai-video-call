@@ -27,6 +27,7 @@ export async function GET(request: Request) {
           meetingName: inv.meetingName,
           hostName: inv.hostName,
           hostId: inv.hostId,
+          hostAvatar: inv.hostAvatar,
           type: inv.type,
           scheduledAt: inv.scheduledAt instanceof Date
             ? inv.scheduledAt.toISOString()
